@@ -74,15 +74,16 @@ README 建议的 001-019 Issues 不应创建到 `tmkmk/app-wps`，因为当前�
 第一阶段环境审计已完成，基础 Java/Maven/Gradle/JDK 工具链可进行 API JAR P0 开发；Android 原生引擎链路仍缺 NDK、CMake、Ninja、Collabora 源码和真机。正式开发应先确认 PoC 的 Git 仓库归属及 Collabora 源码版本，再开始 P0 API JAR → Maven → 独立 Android Demo 链路。
 
 
-## ?? Linux ????
+## 远程 Linux 构建环境更新
 
-2026-11-12 ?? SSH ?? `szy` ???? `pub`?
+2026-11-12 通过 SSH 别名 `szy` 登录远程主机 `pub`。原宿主为 CentOS 7；未升级宿主系统，改用 Docker Rocky Linux 9 构建容器。
 
-- ???CentOS Linux 7?x86_64????????? 166G?
-- ???root?
-- ?????Git 2.45.4?JDK/Javac 8.0.371?GCC/G++ 4.8.5?CMake 2.8.12.2?
-- ??? yum ???CMake 3.17.5?Ninja 1.10.2?Python 3.6.8?Git LFS 2.10.0?
-- ???JDK 17/21?Android SDK?Android NDK 29.0.14206865?Android Build Tools 37??? Gradle?
-- Google Android ?? IPv4/IPv6 ???????? Gerrit clone/ls-remote ????
+- 通过本机 Clash Verge 代理建立 SSH 反向转发：远端 `127.0.0.1:7897` 指向本机 `127.0.0.1:7897`。
+- 已在 `/opt/collabora-toolchain` 安装 JDK 21.0.13、Gradle 9.6.0、Android SDK Platform 37.0、Build Tools 37.0.0、NDK 29.0.14206865、CMake 3.22.1 和 Ninja 1.10.2。
+- Docker Rocky Linux 9 构建镜像安装 GCC Toolset 12.2.1、Python 3.11.13、gperf、libuuid-devel、bison、flex 及 Android/LibreOffice 配置所需基础开发包。
+- 已将固定提交 `6c172ae2c9ba34bdde6a773e81449e16a2e28a6e` 的源码传入远端工作副本。Gerrit Git clone 在代理链路上停滞，因此使用本机源码 Git archive 传输；远端工作副本不含原始 Git 元数据。
+- `engine/autogen.sh` 配置成功，目标为 `CPAndroidAarch64`。配置警告：Clang 插件禁用、缺少 translations 回退 en-US、缺少 NASM。
+- Engine `make -j8` 已在容器内以非 root UID 启动，正在通过代理下载并校验上游依赖包；当前尚无 Engine 编译完成结果或 AAR。
+- Clash 代理转发由本机会话维护；本机会话结束后该转发可能断开。远端构建容器、源码和已下载缓存保存在 `szy`，容器名为 `collabora-engine-build`。
 
-???????????????? Collabora Android Engine?????????????????????????? Linux ?????? JDK?Android SDK/NDK?Gradle ????????
+结论：远端 Linux 的 JDK、Android SDK/NDK 和源码配置已就绪，Engine 编译仍在运行。不能将当前状态报告为 Engine 构建成功。
