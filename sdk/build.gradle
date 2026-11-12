@@ -1,0 +1,4 @@
+allprojects {
+    group = 'com.company.collabora'
+    version = '0.1.0-SNAPSHOT'
+}

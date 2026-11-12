@@ -1,0 +1,25 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+    withSourcesJar()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifactId = 'collabora-mobile-api'
+            pom {
+                name = 'Collabora Mobile API'
+                description = 'Stable API contract for the Collabora mobile editor PoC'
+            }
+        }
+    }
+    repositories { maven { url = layout.buildDirectory.dir('repo') } }
+}
