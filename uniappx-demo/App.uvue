@@ -1,0 +1,9 @@
+<script lang="uts">
+export default {
+  onLaunch: function () {
+  }
+}
+</script>
+
+<style>
+</style>

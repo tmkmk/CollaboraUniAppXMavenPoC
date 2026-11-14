@@ -1,0 +1,69 @@
+<script setup lang="uts">
+import { openDocument } from '@/uni_modules/uni-collabora-editor'
+
+// const filePath = ref('/sdcard/Android/data/io.github.tmkmk.collabora.poc/files/a.docx')
+const filePath = ref('https://gjy.gzjtjt.cn/1.docx')
+const userName = ref('张三')
+const mode = ref('revision')
+
+function openWordDocument() {
+  const path = filePath.value.trim()
+  if (path.startsWith('https://') || path.startsWith('http://')) {
+    uni.downloadFile({
+      url: path,
+      success: (result) => {
+        if (result.statusCode < 200 || result.statusCode >= 300) {
+          uni.showToast({ title: '下载文档失败：HTTP ' + result.statusCode, icon: 'none' })
+          return
+        }
+        openLocalDocument(result.tempFilePath)
+      },
+      fail: (error) => {
+        uni.showToast({ title: '下载文档失败：' + error.errMsg, icon: 'none' })
+      }
+    })
+    return
+  }
+  openLocalDocument(path)
+}
+
+function openLocalDocument(path: string) {
+  try {
+    openDocument({
+      filePath: path,
+      userName: userName.value,
+      mode: mode.value as 'edit' | 'readonly' | 'revision'
+    })
+  } catch (error) {
+    uni.showToast({ title: String(error), icon: 'none' })
+  }
+}
+</script>
+
+<template>
+  <view class="page">
+    <text class="title">Collabora Word 编辑器 PoC</text>
+    <text class="description">支持 HTTP(S) 下载地址、uni.downloadFile 返回的 tempFilePath，或当前 App 有权限访问的绝对路径。</text>
+    <input v-model="filePath" placeholder="Word 下载地址或本地路径" />
+    <input v-model="userName" placeholder="修订作者姓名" />
+    <input v-model="mode" placeholder="edit / readonly / revision" />
+    <button type="primary" @click="openWordDocument">打开 Word 文档</button>
+  </view>
+</template>
+
+<style>
+.page {
+  flex: 1;
+  padding: 32px;
+  justify-content: center;
+}
+.title {
+  font-size: 22px;
+  margin-bottom: 12px;
+}
+.description {
+  font-size: 15px;
+  color: #666666;
+  margin-bottom: 24px;
+}
+</style>

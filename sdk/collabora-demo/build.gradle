@@ -1,0 +1,15 @@
+plugins {
+    id 'application'
+}
+
+repositories {
+    maven { url = uri("$rootDir/collabora-api/build/repo") }
+}
+
+dependencies {
+    implementation 'com.company.collabora:collabora-mobile-api:0.1.0-SNAPSHOT'
+}
+
+application {
+    mainClass = 'com.company.collabora.demo.ApiDemo'
+}

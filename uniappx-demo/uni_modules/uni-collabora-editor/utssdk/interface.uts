@@ -1,0 +1,19 @@
+export type CollaboraOpenMode = 'edit' | 'readonly' | 'revision'
+
+export type CollaboraOpenOptions = {
+  filePath: string
+  userName?: string
+  mode?: CollaboraOpenMode
+  webOptions?: UTSJSONObject
+  enableTrackChanges?: boolean
+}
+
+export type UnoValue = {
+  type: string
+  value: string | number | boolean
+}
+
+export type UnoArguments = UTSJSONObject
+
+export type CollaboraEditorEvent = UTSJSONObject
+export type CollaboraEditorEventCallback = (event: CollaboraEditorEvent) => void

@@ -1,3 +1,15 @@
 sdk/.gradle/
+sdk/**/.gradle/
 sdk/**/build/
+uniappx-demo/maven/
+uniappx-demo/unpackage/
+uniappx-demo/.hbuilderx/
 collabora-source/online/.git/
+*.log
+sdk/central-release/*.zip
+sdk/central-release/staging/
+sdk/central-release/staging-*/
+sdk/collabora-api/bin/
+sdk/collabora-demo/bin/
+sdk/collabora-engine/*.orig
+sdk/collabora-engine/__pycache__/

@@ -1,0 +1,38 @@
+{
+	"name": "Collabora uni-app x Demo",
+	"appid": "__UNI__AF03C0D",
+	"description": "Collabora Word editing integration PoC",
+	"versionName": "0.1.1",
+	"versionCode": "101",
+	"app": {
+		"distribute": {
+			"android": {
+				"packagename": "io.github.tmkmk.collabora.poc"
+			}
+		}
+	},
+	"uni-app-x": {
+		"vapor": true,
+		"styleIsolationVersion": "2",
+		"vapor-render-target": "bytecode",
+		"vapor-default-script-lang": "ts"
+	},
+	"vueVersion": "3",
+	"app-android": {
+		"distribute": {
+			"packagename": "io.github.tmkmk.collabora.poc",
+			"modules": {},
+			"icons": {},
+			"splashScreens": {
+				"default": {}
+			}
+		}
+	},
+	"app-ios": {
+		"distribute": {
+			"modules": {},
+			"icons": {},
+			"splashScreens": {}
+		}
+	}
+}

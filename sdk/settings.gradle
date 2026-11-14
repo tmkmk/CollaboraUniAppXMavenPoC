@@ -1,2 +1,3 @@
 rootProject.name = 'collabora-sdk'
 include ':collabora-api'
+include ':collabora-demo'

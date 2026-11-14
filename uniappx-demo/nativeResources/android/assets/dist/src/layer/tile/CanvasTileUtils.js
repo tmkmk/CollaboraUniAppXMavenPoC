@@ -1,0 +1,196 @@
+var cool;
+(function(cool2) {
+  class RawDelta {
+    constructor(delta, id, isKeyframe) {
+      this._delta = delta;
+      this._id = id;
+      this._isKeyframe = isKeyframe;
+    }
+    get length() {
+      return this.delta.length;
+    }
+    get delta() {
+      return this._delta;
+    }
+    get id() {
+      return this._id;
+    }
+    get isKeyframe() {
+      return this._isKeyframe;
+    }
+  }
+  cool2.RawDelta = RawDelta;
+  const _CanvasTileUtils = class _CanvasTileUtils {
+    static getUnpremultiplyTable() {
+      if (this.unpremultiplyTable)
+        return this.unpremultiplyTable;
+      const table = new Uint8Array(256 * 256);
+      for (let a = 1; a < 256; ++a) {
+        const base = a << 8;
+        for (let v = 0; v < 256; ++v)
+          table[base + v] = Math.min(255, Math.ceil(v * 255 / a));
+      }
+      this.unpremultiplyTable = table;
+      return table;
+    }
+    // Convert premultiplied-alpha RGBA to straight alpha, in place.
+    // byteOffset/byteLength delimit the region to touch.
+    static unpremultiply(data, byteLength, byteOffset = 0) {
+      const table = this.getUnpremultiplyTable();
+      for (let i = byteOffset; i < byteOffset + byteLength; i += 4) {
+        const alpha = data[i + 3];
+        if (alpha === 255)
+          continue;
+        const base = alpha << 8;
+        data[i] = table[base + data[i]];
+        data[i + 1] = table[base + data[i + 1]];
+        data[i + 2] = table[base + data[i + 2]];
+      }
+    }
+    // output.byteOffset + outputOffset must be a multiple of 4, and output must
+    // hold width * height * 4 bytes from outputOffset. Decoding stops at the
+    // first row that does not fit in data, and leaves the rows below as they were.
+    static unrle(data, width, height, output, outputOffset = 0) {
+      const output32 = new Uint32Array(output.buffer, output.byteOffset + outputOffset, width * height);
+      const input = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      const littleEndian = this.littleEndian;
+      let offset = 0;
+      const rleMaskSizeBytes = 256 / 8;
+      for (let y = 0; y < height; ++y) {
+        if (offset + 2 + rleMaskSizeBytes > data.length)
+          return data.length;
+        const rleSize = data[offset] + data[offset + 1] * 256;
+        if (offset + 2 + rleMaskSizeBytes + rleSize * 4 > data.length)
+          return data.length;
+        offset += 2;
+        const rleMask = offset;
+        offset += rleMaskSizeBytes;
+        if (rleSize > 0)
+          this.unpremultiply(data, rleSize * 4, offset);
+        let lastPixel = 0;
+        let lastMask = 0;
+        let bitToCheck = 256;
+        let rleMaskOffset = rleMask;
+        let pixOffset = y * width;
+        let pixSrc = offset;
+        for (let x = 0; x < width; ++x) {
+          if (bitToCheck > 128) {
+            bitToCheck = 1;
+            lastMask = data[rleMaskOffset++];
+          }
+          if (!(lastMask & bitToCheck)) {
+            lastPixel = input.getUint32(pixSrc, littleEndian);
+            pixSrc += 4;
+          }
+          bitToCheck = bitToCheck << 1;
+          output32[pixOffset++] = lastPixel;
+        }
+        offset += rleSize * 4;
+      }
+      return offset;
+    }
+    static updateImageFromDeltas(imageData, deltas, keyframeDeltaSize, tileSize, debug = false) {
+      let nDelta = 0;
+      let offset = keyframeDeltaSize;
+      while (offset < deltas.length) {
+        if (debug)
+          console.debug("Next delta at " + offset + " length " + (deltas.length - offset));
+        const delta = !offset ? deltas : deltas.subarray(offset);
+        const susDeltaSize = tileSize * tileSize * 4;
+        if (debug && delta.length >= susDeltaSize) {
+          console.warn("Unusual delta possibly mis-tagged, suspicious size vs. type " + delta.length + " vs. " + susDeltaSize);
+        }
+        const oldData = this.hasRowCopy(delta) ? this.snapshot(imageData) : imageData;
+        if (debug)
+          console.debug("Applying delta chunk " + nDelta++ + " of total size " + delta.length + " at stream offset " + offset);
+        const len = this.applyDeltaChunk(imageData, delta, oldData, tileSize, tileSize, debug);
+        if (debug)
+          console.debug("Applied delta chunk of size " + len);
+        offset += len;
+      }
+    }
+    // Whether the chunk, which ends at 't', has a row copy ('c'). Spans ('d')
+    // are skipped by their length.
+    static hasRowCopy(delta) {
+      for (let i = 0; i < delta.length; ) {
+        if (delta[i] === 99)
+          return true;
+        if (delta[i] !== 100)
+          return false;
+        i += 4 + delta[i + 3] * 4;
+      }
+      return false;
+    }
+    static snapshot(image) {
+      if (!this.previousImage || this.previousImage.length !== image.length)
+        this.previousImage = new Uint8Array(image.length);
+      this.previousImage.set(image);
+      return this.previousImage;
+    }
+    static applyDeltaChunk(imgData, delta, oldData, width, height, debug = false) {
+      const pixSize = width * height * 4;
+      let offset = 0;
+      if (0) {
+        for (let i2 = 0; i2 < pixSize; ++i2)
+          oldData[i2 * 4 + 1] = 128;
+      }
+      if (0) {
+        for (let i2 = 0; i2 < pixSize * 4; ++i2)
+          imgData[i2] = 128;
+      }
+      let i = 0;
+      for (let stop = false; i < delta.length && !stop; ) {
+        switch (delta[i]) {
+          case 99: {
+            const count = delta[i + 1];
+            const srcRow = delta[i + 2];
+            const destRow = delta[i + 3];
+            if (debug)
+              console.debug("[" + i + "]: copy " + count + " row(s) " + srcRow + " to " + destRow);
+            i += 4;
+            const rowBytes = width * 4;
+            const rows = Math.min(count, height - destRow);
+            if (rows > 0)
+              imgData.set(oldData.subarray(srcRow * rowBytes, (srcRow + rows) * rowBytes), destRow * rowBytes);
+            break;
+          }
+          case 100: {
+            const destRow = delta[i + 1];
+            const destCol = delta[i + 2];
+            let span = delta[i + 3];
+            offset = destRow * width * 4 + destCol * 4;
+            if (debug)
+              console.debug("[" + i + "]: apply new span of size " + span + " at pos " + destCol + ", " + destRow + " into delta at byte: " + offset);
+            i += 4;
+            span *= 4;
+            this.unpremultiply(delta, span, i);
+            if (span <= this.smallSpanBytes || offset + span > imgData.length)
+              for (let j = 0; j < span; ++j)
+                imgData[offset++] = delta[i + j];
+            else
+              imgData.set(delta.subarray(i, i + span), offset);
+            i += span;
+            break;
+          }
+          case 116: {
+            stop = true;
+            i++;
+            break;
+          }
+          default: {
+            console.error("[" + i + "]: ERROR: Unknown delta code " + delta[i]);
+            i = delta.length;
+            break;
+          }
+        }
+      }
+      return i;
+    }
+  };
+  _CanvasTileUtils.littleEndian = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+  _CanvasTileUtils.previousImage = null;
+  _CanvasTileUtils.smallSpanBytes = 32;
+  _CanvasTileUtils.unpremultiplyTable = null;
+  let CanvasTileUtils = _CanvasTileUtils;
+  cool2.CanvasTileUtils = CanvasTileUtils;
+})(cool || (cool = {}));

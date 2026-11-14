@@ -1,0 +1,68 @@
+--- a/android/lib/build.gradle
++++ b/android/lib/build.gradle
+@@ -177,8 +177,10 @@
+         rename "LICENSE.html", "license.html"
+         rename "NOTICE", "notice.txt"
+     }
+-    from("${coExampleDocument}") {
+-        rename ".*", "example.odt"
++    if (project.findProperty("wordOnly") != "true") {
++        from("${coExampleDocument}") {
++            rename ".*", "example.odt"
++        }
+     }
+     into('program') {
+         from "${coInstdir}/program"
+@@ -188,6 +190,9 @@
+         from "${coInstdir}/share"
+         // Filter data is needed by e.g. the drawingML preset shape import.
+         includes = ['registry/**', 'filter/**', 'gallery/**', 'palette/**', 'theme_definitions/collabora/**']
++        if (project.findProperty('wordOnly') == 'true') {
++            exclude 'gallery/**'
++        }
+     }
+ }
+ 
+@@ -200,12 +205,16 @@
+ }
+ 
+ tasks.register('copyDocTemplates', Copy) {
+-    from "${rootProject.getRootDir()}/templates/untitled.odp",
+-            "${rootProject.getRootDir()}/templates/untitled.ods",
+-            "${rootProject.getRootDir()}/templates/untitled.odt",
+-            "${rootProject.getRootDir()}/templates/untitled.pptx",
+-            "${rootProject.getRootDir()}/templates/untitled.xlsx",
+-            "${rootProject.getRootDir()}/templates/untitled.docx"
++    if (project.findProperty("wordOnly") == "true") {
++        from "${rootProject.getRootDir()}/templates/untitled.docx"
++    } else {
++        from "${rootProject.getRootDir()}/templates/untitled.odp",
++                "${rootProject.getRootDir()}/templates/untitled.ods",
++                "${rootProject.getRootDir()}/templates/untitled.odt",
++                "${rootProject.getRootDir()}/templates/untitled.pptx",
++                "${rootProject.getRootDir()}/templates/untitled.xlsx",
++                "${rootProject.getRootDir()}/templates/untitled.docx"
++    }
+     into "src/main/assets/templates"
+ }
+ 
+@@ -293,6 +302,9 @@
+         providers.exec {
+             commandLine 'make', '-C', "${rootProject.layout.buildDirectory.get()}/../../browser", "DIST_FOLDER=${project.layout.projectDirectory}/src/debug/assets/dist", 'BUNDLE=DEBUG'
+         }.result.get()
++        if (project.findProperty('wordOnly') == 'true') {
++            delete fileTree('src/debug/assets/dist') { include 'videobackgrounds/**', 'templates/files/presentation/**', 'templates/files/spreadsheet/**' }
++        }
+     }
+ }
+ 
+@@ -304,6 +316,9 @@
+         providers.exec {
+             commandLine 'make', '-C', "${rootProject.layout.buildDirectory.get()}/../../browser", "DIST_FOLDER=${project.layout.projectDirectory}/src/release/assets/dist", 'BUNDLE=RELEASE'
+         }.result.get()
++        if (project.findProperty('wordOnly') == 'true') {
++            delete fileTree('src/release/assets/dist') { include 'videobackgrounds/**', 'templates/files/presentation/**', 'templates/files/spreadsheet/**' }
++        }
+     }
+ }
+ 

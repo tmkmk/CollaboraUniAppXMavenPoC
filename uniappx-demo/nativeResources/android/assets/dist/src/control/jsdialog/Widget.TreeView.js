@@ -1,0 +1,1718 @@
+var lastClickHelperRow = -1;
+var lastClickHelperId = "";
+const _TreeViewControl = class _TreeViewControl {
+  // Lazy-evaluated: at construction/build time the container isn't in
+  // the DOM yet, so closest() returns null. Only cache once connected,
+  // otherwise an early access (e.g. during build()) would latch a wrong
+  // `false` for the widget's whole lifetime.
+  get _gridMode() {
+    if (this._gridModeCache !== void 0)
+      return this._gridModeCache;
+    const isGrid = !!this._container.closest("#ChartDataDialog");
+    if (this._container.isConnected)
+      this._gridModeCache = isGrid;
+    return isGrid;
+  }
+  constructor(data, builder) {
+    this._thead = null;
+    this._maxColumnsIncludingState = 0;
+    this._toggleColumns = /* @__PURE__ */ new Set();
+    this._typeAheadText = "";
+    this._activeColumn = 0;
+    this.PAGE_ENTRY_PREFIX = "-$#~";
+    this.PAGE_ENTRY_SUFFIX = "~#$-";
+    this.PAGE_DIVIDER_ROW_CLASS = "page-divider-row";
+    this.TYPE_AHEAD_RESET_TIMEOUT = 1e3;
+    this._container = window.L.DomUtil.create("div", builder.options.cssClass + " ui-treeview");
+    this._container.id = data.id;
+    this._rows = /* @__PURE__ */ new Map();
+    JSDialog.SetupA11yLabelForNonLabelableElement(this._container, data, builder);
+  }
+  get Container() {
+    return this._container;
+  }
+  setActiveColumn(col) {
+    this._activeColumn = col;
+    const parent = this._container.parentElement;
+    if (parent)
+      parent._chartDataActiveColumn = col;
+  }
+  static countColumns(data) {
+    if (!data.entries || !data.entries.length)
+      return data.headers ? data.headers.length : 1;
+    var maxColumns = 0;
+    for (var e in data.entries) {
+      const entry = data.entries[e];
+      const count = entry.columns ? entry.columns.length : 0;
+      if (count > maxColumns)
+        maxColumns = count;
+    }
+    return maxColumns;
+  }
+  static hasState(data) {
+    for (var e in data.entries) {
+      const entry = data.entries[e];
+      if (entry.state !== void 0)
+        return true;
+    }
+    return false;
+  }
+  static hasIcon(data) {
+    for (var e in data.entries) {
+      const entry = data.entries[e];
+      for (var i in entry.columns) {
+        if (entry.columns[i].collapsed !== void 0 || entry.columns[i].expanded !== void 0 || entry.columns[i].collapsedimage !== void 0 || entry.columns[i].expandedimage !== void 0) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+  // The columns in which rows have a checkbox of its own (see createToggleCell).
+  static getToggleColumns(data) {
+    const columns = /* @__PURE__ */ new Set();
+    for (const entry of data.entries || [])
+      (entry.columns || []).forEach((column, index) => {
+        if (column.toggle !== void 0)
+          columns.add(index);
+      });
+    return columns;
+  }
+  findEntryWithRow(entries, row) {
+    for (const i in entries) {
+      if (entries[i].row == row)
+        return entries[i];
+      else if (entries[i].children) {
+        var found = this.findEntryWithRow(entries[i].children, row);
+        if (found)
+          return found;
+      }
+    }
+    return null;
+  }
+  changeCheckboxStateOnClick(checkbox, treeViewData, builder, entry) {
+    let foundEntry;
+    if (checkbox.checked) {
+      foundEntry = this.findEntryWithRow(treeViewData.entries, entry.row);
+      if (foundEntry)
+        checkbox.checked = foundEntry.state = true;
+      builder.callback("treeview", "change", treeViewData, { row: entry.row, value: true }, builder);
+    } else {
+      foundEntry = this.findEntryWithRow(treeViewData.entries, entry.row);
+      if (foundEntry)
+        checkbox.checked = foundEntry.state = false;
+      builder.callback("treeview", "change", treeViewData, { row: entry.row, value: false }, builder);
+    }
+  }
+  createCheckbox(parent, treeViewData, builder, entry) {
+    const checkbox = window.L.DomUtil.create("input", builder.options.cssClass + " ui-treeview-checkbox", parent);
+    checkbox.id = `${treeViewData.id}-checkbox-${entry.row}`;
+    checkbox.type = "checkbox";
+    checkbox.tabIndex = -1;
+    if (entry.state === true)
+      checkbox.checked = true;
+    else
+      checkbox.checked = false;
+    return checkbox;
+  }
+  // A checkbox in a column of its own, as when a row has more than one, each
+  // under a header of its own. The row's own check button is the one in
+  // createCheckbox.
+  createToggleCell(parent, treeViewData, entry, index, builder) {
+    const column = entry.columns[parseInt(index)];
+    const checkbox = window.L.DomUtil.create("input", builder.options.cssClass + " ui-treeview-checkbox", parent);
+    checkbox.id = `${treeViewData.id}-checkbox-${entry.row}-${column.togglecolumn}`;
+    checkbox.type = "checkbox";
+    checkbox.tabIndex = -1;
+    checkbox.checked = column.toggle === true;
+    const headers = treeViewData.headers;
+    const header = headers ? headers[parseInt(index) - (this._columns - headers.length)] : void 0;
+    const textColumn = entry.columns.find((cell) => typeof cell.text === "string" && cell.text !== "");
+    const rowText = textColumn ? textColumn.text : entry.text;
+    const label = header && header.text ? header.text + " " + rowText : rowText;
+    if (label)
+      checkbox.setAttribute("aria-label", label);
+    checkbox.addEventListener("change", () => {
+      column.toggle = checkbox.checked;
+      builder.callback("treeview", "change", treeViewData, { row: entry.row, col: column.togglecolumn, value: checkbox.checked }, builder);
+    });
+    return checkbox;
+  }
+  createRadioButton(parent, treeViewData, builder, entry) {
+    const radioButton = window.L.DomUtil.create("input", builder.options.cssClass + " ui-treeview-checkbox", parent);
+    radioButton.id = `${treeViewData.id}-radio-${entry.row}`;
+    radioButton.type = "radio";
+    radioButton.tabIndex = -1;
+    if (entry.state === true)
+      radioButton.checked = true;
+    else
+      radioButton.checked = false;
+    return radioButton;
+  }
+  createSelectionElement(parent, treeViewData, entry, builder) {
+    let selectionElement;
+    const checkboxtype = treeViewData.checkboxtype;
+    if (checkboxtype == "radio") {
+      selectionElement = this.createRadioButton(parent, treeViewData, builder, entry);
+    } else {
+      selectionElement = this.createCheckbox(parent, treeViewData, builder, entry);
+    }
+    if (entry.enabled === false)
+      selectionElement.disabled = true;
+    if (treeViewData.enabled !== false) {
+      selectionElement.addEventListener("change", () => {
+        this.changeCheckboxStateOnClick(selectionElement, treeViewData, builder, entry);
+      });
+    }
+    return selectionElement;
+  }
+  isSeparator(element) {
+    if (!element.text)
+      return false;
+    return element.text.toLowerCase() === "separator";
+  }
+  static isSingleClickActivate(treeViewData) {
+    return treeViewData.singleclickactivate === true;
+  }
+  isNavigator(data) {
+    return data.id && typeof data.id === "string" && data.id.startsWith("Navigator");
+  }
+  getCellIconId(cellData) {
+    let iconId = cellData.collapsed ? cellData.collapsed : cellData.expanded;
+    const newLength = iconId.lastIndexOf(".");
+    if (newLength > 0)
+      iconId = iconId.substr(0, newLength).replaceAll("/", "");
+    else
+      iconId = iconId.replaceAll("/", "");
+    return iconId;
+  }
+  createImageColumn(parentContainer, builder, imageUrl) {
+    const image = window.L.DomUtil.create("img", builder.options.cssClass + " ui-treeview-checkbox ui-treeview-image ui-decorative-image", parentContainer);
+    image.src = imageUrl;
+    image.tabIndex = -1;
+    image.alt = "";
+    return image;
+  }
+  isExpanded(entry) {
+    for (const i in entry.columns)
+      if (entry.columns[i].expanded === true)
+        return true;
+    return false;
+  }
+  fillHeader(header, builder, data, columnIndex) {
+    if (!header)
+      return;
+    const th = window.L.DomUtil.create("div", builder.options.cssClass + " ui-treeview-header", this._thead);
+    th.setAttribute("role", "columnheader");
+    if (header.headerName !== void 0) {
+      const nameInput = window.L.DomUtil.create("input", builder.options.cssClass + " ui-treeview-header-name", th);
+      nameInput.type = "text";
+      nameInput.value = header.headerName;
+      const headerNameLabel = header.headerNameAriaLabel || _("Name");
+      nameInput.setAttribute("aria-label", headerNameLabel);
+      if (data && columnIndex !== void 0) {
+        nameInput.id = data.id + "-header-" + columnIndex + "-name";
+        nameInput.dataset.keepValueOnRebuild = "";
+        nameInput.size = 1;
+        const engineValue = header.headerName;
+        nameInput.addEventListener("blur", () => {
+          if (!document.hasFocus())
+            return;
+          if (nameInput.value === engineValue)
+            return;
+          builder.callback("treeview", "headernamechanged", data, { column: columnIndex, value: nameInput.value }, builder);
+        });
+        nameInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            nameInput.blur();
+          } else if (e.key === "Escape") {
+            if (nameInput.value !== engineValue) {
+              nameInput.value = engineValue;
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          } else if (_TreeViewControl.headerNameOwnedKeys.includes(e.key)) {
+            e.stopPropagation();
+          }
+        });
+      }
+    }
+    if (header.color) {
+      const colorBar = window.L.DomUtil.create("div", "ui-treeview-header-color", th);
+      colorBar.style.backgroundColor = "#" + header.color;
+    }
+    if (header.sortable !== false) {
+      const button = window.L.DomUtil.create("button", builder.options.cssClass + " ui-treeview-header-button", th);
+      if (data && columnIndex !== void 0) {
+        button.id = data.id + "-header-" + columnIndex + "-button";
+      }
+      button.textContent = header.text;
+      if (!header.text && !header.arrow)
+        button.tabIndex = -1;
+      if (header.arrow) {
+        th.setAttribute("aria-sort", header.arrow === "up" ? "ascending" : "descending");
+      }
+      const icon = window.L.DomUtil.create("span", builder.options.cssClass + " ui-treeview-header-sort-icon", button);
+      icon.setAttribute("aria-hidden", "true");
+      if (header.arrow)
+        window.L.DomUtil.addClass(icon, header.arrow);
+    } else {
+      const span = window.L.DomUtil.create("span", builder.options.cssClass + " ui-treeview-header-text", th);
+      span.innerText = header.text;
+    }
+  }
+  fillRow(data, entry, builder, level, parent) {
+    var highlight = false;
+    if (data.highlightTerm && data.highlightTerm.trim().length > 0) {
+      highlight = entry.text && entry.text.toLowerCase().indexOf(data.highlightTerm.toLowerCase()) >= 0;
+    }
+    const tr = window.L.DomUtil.create("div", builder.options.cssClass + " ui-treeview-entry" + (highlight ? " highlighted" : ""), parent);
+    this._rows.set(String(entry.row), tr);
+    tr.id = data.id + "_" + entry.row;
+    tr.setAttribute("level", String(level));
+    tr._row = entry.row;
+    const rowRole = this._containerRole === "tree" ? "treeitem" : this._containerRole === "listbox" ? "option" : "row";
+    tr.setAttribute("role", rowRole);
+    const dummyColumns = this.getLeadingColumns();
+    tr.style.gridColumn = "1 / " + (this._columns + dummyColumns + 1);
+    if (this._columns + dummyColumns + 1 > this._maxColumnsIncludingState) {
+      this._maxColumnsIncludingState = this._columns + dummyColumns + 1;
+    }
+    if (this.isPageDivider(entry, this.PAGE_ENTRY_PREFIX, this.PAGE_ENTRY_SUFFIX)) {
+      window.L.DomUtil.addClass(tr, this.PAGE_DIVIDER_ROW_CLASS);
+    } else {
+      tr.setAttribute("tabindex", "-1");
+    }
+    let selectionElement;
+    if (this._hasState) {
+      const td = window.L.DomUtil.create("div", "", tr);
+      if (entry.state !== void 0 || entry.enabled !== void 0) {
+        selectionElement = this.createSelectionElement(td, data, entry, builder);
+      }
+      if (this._isRealTree)
+        td.setAttribute("aria-level", level);
+    }
+    this.fillCells(entry, builder, data, tr, level, selectionElement);
+    this.setupRowProperties(tr, entry, level, selectionElement);
+    this.setupRowDragAndDrop(tr, data, entry, builder);
+    return tr;
+  }
+  highlightAllTreeViews(highlight) {
+    if (highlight) {
+      document.querySelectorAll(".ui-treeview").forEach((item) => {
+        window.L.DomUtil.addClass(item, "droptarget");
+      });
+    } else {
+      document.querySelectorAll(".ui-treeview").forEach((item) => {
+        window.L.DomUtil.removeClass(item, "droptarget");
+      });
+    }
+  }
+  setupDragAndDrop(treeViewData, builder) {
+    if (treeViewData.enabled !== false) {
+      this._container.ondrop = (ev) => {
+        ev.preventDefault();
+        var row = ev.dataTransfer.getData("text");
+        builder.callback("treeview", "dragend", treeViewData, row, builder);
+        this.highlightAllTreeViews(false);
+      };
+      this._container.ondragover = (event) => {
+        event.preventDefault();
+      };
+    }
+  }
+  setupRowDragAndDrop(tr, treeViewData, entry, builder) {
+    if (treeViewData.enabled !== false && entry.state == null) {
+      tr.draggable = treeViewData.draggable === false ? false : true;
+      tr.ondragstart = (ev) => {
+        ev.dataTransfer.setData("text", "" + entry.row);
+        builder.callback("treeview", "dragstart", treeViewData, entry.row, builder);
+        this.highlightAllTreeViews(true);
+      };
+      tr.ondragend = () => {
+        this.highlightAllTreeViews(false);
+      };
+      tr.ondragover = (event) => {
+        event.preventDefault();
+      };
+    }
+  }
+  setupRowProperties(tr, entry, level, selectionElement) {
+    if (entry.children)
+      tr.setAttribute("aria-expanded", "true");
+    if (level !== void 0 && this._isRealTree)
+      tr.setAttribute("aria-level", "" + level);
+    if (entry.selected === true)
+      this.selectEntry(tr, selectionElement, false);
+    const disabled = entry.enabled === false;
+    if (disabled)
+      window.L.DomUtil.addClass(tr, "disabled");
+    if (entry.ondemand || entry.collapsed) {
+      window.L.DomUtil.addClass(tr, "collapsed");
+      tr.setAttribute("aria-expanded", "false");
+    }
+  }
+  setupCellTooltip(cell, map) {
+    app.layoutingService.onDrain(() => {
+      if (cell.scrollWidth > cell.clientWidth) {
+        cell.dataset.cooltip = cell.innerText;
+        window.L.control.attachTooltipEventListener(cell, map);
+      }
+    });
+  }
+  createExpandableIconCell(parent, entry, index, builder) {
+    const icon = window.L.DomUtil.create("img", "ui-treeview-icon ui-decorative-image", parent);
+    if (this._isNavigator)
+      icon.draggable = false;
+    const iconId = this.getCellIconId(entry.columns[index]);
+    window.L.DomUtil.addClass(icon, iconId + "img");
+    const iconName = app.LOUtil.getIconNameOfCommand(iconId, true);
+    app.LOUtil.setImage(icon, iconName, builder.map);
+    icon.tabIndex = -1;
+    icon.alt = "";
+  }
+  createTextCell(treeViewData, parent, entry, index, selectionElement, builder) {
+    const text = entry.columns[index].text !== void 0 ? builder._cleanText(entry.columns[index].text) : builder._cleanText(entry.text);
+    const hasRenderer = entry.columns[index].customEntryRenderer || treeViewData.customEntryRenderer;
+    const hasCache = hasRenderer && builder.rendersCache[treeViewData.id];
+    const hasCachedImage = hasCache && builder.rendersCache[treeViewData.id].images[entry.row];
+    let cell = null;
+    if (hasCachedImage) {
+      const image = builder.rendersCache[treeViewData.id].images[entry.row];
+      cell = window.L.DomUtil.create("span", builder.options.cssClass + ` ui-treeview-cell-text ui-treeview-cell-text-content ui-treeview-${entry.row}-${index}`, parent);
+      const img = window.L.DomUtil.create("img", "ui-treeview-custom-render", cell);
+      img.src = image;
+      img.alt = text;
+      cell = img;
+    } else if (this.isPageDivider(entry, this.PAGE_ENTRY_PREFIX, this.PAGE_ENTRY_SUFFIX)) {
+      cell = window.L.DomUtil.create("span", builder.options.cssClass + ` ui-treeview-cell-text-content page-divider`, parent);
+      cell.innerText = this.getPageEntryText(entry.text, this.PAGE_ENTRY_PREFIX, this.PAGE_ENTRY_SUFFIX);
+      this.setupCellTooltip(cell, builder.map);
+    } else if (treeViewData.highlightTerm !== void 0) {
+      cell = this.createHighlightedCell(parent, entry, index, builder, treeViewData.highlightTerm);
+    } else {
+      const elementType = selectionElement ? "label" : "span";
+      cell = window.L.DomUtil.create(elementType, builder.options.cssClass + ` ui-treeview-cell-text-content ui-treeview-${entry.row}-${index}`, parent);
+      if (selectionElement) {
+        cell.setAttribute("for", selectionElement.id);
+      }
+      cell.innerText = text;
+      this.setupCellTooltip(cell, builder.map);
+    }
+    if (hasRenderer) {
+      JSDialog.OnDemandRenderer(builder, treeViewData.id, "treeview", entry.row, cell, parent, entry.text);
+    }
+  }
+  /**
+   * Creates a partially highlighted cell for the tree view.
+   * Highlighted part of text corresponds to where core has marked a hit
+   *
+   * e.g. searching for 'line', core sends the following:
+   * 		Collabora On[line],
+   * 		https://www.collaboraon[line].com,
+   * 		des graphiques spark[line],
+   *      etc.
+   */
+  createHighlightedCell(parent, entry, index, builder, searchTerm) {
+    const sourceText = entry.text;
+    const searchPattern = `[${searchTerm}]`;
+    const mainSpan = window.L.DomUtil.create("span", builder.options.cssClass + ` ui-treeview-cell-text-content`, parent);
+    const fragments = this.caseInsensitiveSplit(sourceText, searchPattern);
+    if (fragments.length === 1) {
+      mainSpan.appendChild(document.createTextNode(sourceText));
+    } else {
+      for (let i = 0; i < fragments.length - 1; i += 2) {
+        mainSpan.appendChild(document.createTextNode(fragments[i]));
+        const highlightSpan = window.L.DomUtil.create("span", builder.options.cssClass + " highlighted", mainSpan);
+        highlightSpan.innerText = fragments[i + 1].substring(1, fragments[i + 1].length - 1);
+        mainSpan.appendChild(highlightSpan);
+      }
+      mainSpan.appendChild(document.createTextNode(fragments[fragments.length - 1]));
+    }
+    this.setupCellTooltip(mainSpan, builder.map);
+    return mainSpan;
+  }
+  isPageDivider(entry, pageEntryPrefix, pageEntrySuffix) {
+    return entry.text && entry.text.startsWith(pageEntryPrefix) && entry.text.endsWith(pageEntrySuffix);
+  }
+  getPageEntryText(text, pageEntryPrefix, pageEntrySuffix) {
+    return text.substring(pageEntryPrefix.length, text.length - pageEntrySuffix.length);
+  }
+  caseInsensitiveSplit(text, delimeter) {
+    const escapedPattern = delimeter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${escapedPattern})`, "gi");
+    return text.split(regex);
+  }
+  createLinkCell(parent, entry, index, builder) {
+    const cell = window.L.DomUtil.create("span", builder.options.cssClass + " ui-treeview-cell-text", parent);
+    const link = window.L.DomUtil.create("a", "", cell);
+    link.href = entry.columns[index].link || entry.columns[index].text;
+    link.innerText = entry.columns[index].text || entry.text;
+    link.target = "_blank";
+    link.rel = "noopener";
+    const srOnly = window.L.DomUtil.create("span", "visuallyhidden", link);
+    srOnly.innerText = " " + _("(opens in new tab)");
+  }
+  fillCells(entry, builder, treeViewData, tr, level, selectionElement) {
+    let td, expander, span, text, img;
+    const rowElements = [];
+    if (this.isSeparator(entry))
+      window.L.DomUtil.addClass(tr, "context-menu-separator");
+    if (this._isRealTree) {
+      td = window.L.DomUtil.create("div", "ui-treeview-expander-column", tr);
+      rowElements.push(td);
+      if (entry.children && entry.children.length)
+        expander = window.L.DomUtil.create("div", builder.options.cssClass + " ui-treeview-expander", td);
+    }
+    for (const index in entry.columns) {
+      td = window.L.DomUtil.create("div", "", tr);
+      rowElements.push(td);
+      if (this._containerRole === "grid" || this._containerRole === "treegrid") {
+        td.id = `${treeViewData.id}-cell-${entry.row}-${index}`;
+        td.tabIndex = -1;
+      }
+      if (parseInt(index) === 0 && (this._containerRole === "grid" || this._containerRole === "treegrid")) {
+        window.L.DomUtil.addClass(td, "ui-treeview-rowheader");
+        td.setAttribute("role", "rowheader");
+      }
+      span = window.L.DomUtil.create("span", builder.options.cssClass + " ui-treeview-cell", td);
+      text = window.L.DomUtil.create("span", builder.options.cssClass + " ui-treeview-cell-text", span);
+      if (entry.text == "<dummy>")
+        continue;
+      img = entry.columns[index].collapsedimage ? entry.columns[index].collapsedimage : entry.columns[index].expandedimage;
+      if (img) {
+        window.L.DomUtil.addClass(td, "ui-treeview-icon-column");
+        this.createImageColumn(text, builder, img);
+      } else if (entry.columns[index].collapsed || entry.columns[index].expanded) {
+        window.L.DomUtil.addClass(td, "ui-treeview-icon-column");
+        window.L.DomUtil.addClass(span, "ui-treeview-expandable-with-icon");
+        this.createExpandableIconCell(text, entry, index, builder);
+      } else if (entry.columns[index].toggle !== void 0) {
+        window.L.DomUtil.addClass(td, "ui-treeview-toggle-column");
+        this.createToggleCell(text, treeViewData, entry, index, builder);
+      } else if (entry.columns[index].link && !this.isSeparator(entry.columns[index])) {
+        this.createLinkCell(text, entry, index, builder);
+      } else if (entry.columns[index].text !== void 0 && !this.isSeparator(entry.columns[index])) {
+        this.createTextCell(treeViewData, text, entry, index, selectionElement, builder);
+      }
+      for (const i in rowElements) {
+        const element = rowElements[i];
+        if (this._containerRole === "grid" || this._containerRole === "treegrid") {
+          if (!element.getAttribute("role"))
+            element.setAttribute("role", "gridcell");
+        }
+      }
+    }
+    if (!this.isPageDivider(entry, this.PAGE_ENTRY_PREFIX, this.PAGE_ENTRY_SUFFIX)) {
+      var clickFunction = this.createClickFunction(tr, selectionElement, true, this._singleClickActivate, builder, treeViewData, entry);
+      var doubleClickFunction = this.createClickFunction(tr, selectionElement, false, true, builder, treeViewData, entry);
+      this.setupEntryMouseEvents(tr, entry, treeViewData, builder, selectionElement, expander, clickFunction, doubleClickFunction);
+      this.setupEntryKeyboardEvents(tr, entry, selectionElement, expander, clickFunction, doubleClickFunction, builder, treeViewData);
+      this.setupEntryContextMenuEvent(tr, entry, treeViewData, builder);
+    }
+  }
+  setupEntryContextMenuEvent(tr, entry, treeViewData, builder) {
+    tr.addEventListener("contextmenu", (e) => {
+      builder.callback("treeview", "contextmenu", treeViewData, entry.row, builder);
+      e.preventDefault();
+    });
+  }
+  setupEntryMouseEvents(tr, entry, treeViewData, builder, selectionElement, expander, clickFunction, doubleClickFunction) {
+    tr.addEventListener("click", clickFunction);
+    if (!this._singleClickActivate) {
+      if (window.ThisIsTheiOSApp) {
+        tr.addEventListener("click", (event) => {
+          if (window.L.DomUtil.hasClass(tr, "disabled"))
+            return;
+          if (entry.row == lastClickHelperRow && treeViewData.id == lastClickHelperId)
+            doubleClickFunction(event);
+          else {
+            lastClickHelperRow = entry.row;
+            lastClickHelperId = treeViewData.id;
+            setTimeout(() => {
+              lastClickHelperRow = -1;
+            }, 300);
+          }
+        });
+      } else {
+        tr.addEventListener("dblclick", doubleClickFunction);
+      }
+    }
+    const toggleFunction = (e) => {
+      this.toggleEntry(tr, treeViewData, entry, builder);
+      e.preventDefault();
+    };
+    const expandFunction = (e) => {
+      this.expandEntry(tr, treeViewData, entry, builder);
+      e.preventDefault();
+    };
+    if (expander && entry.children && entry.children.length) {
+      if (entry.ondemand) {
+        window.L.DomEvent.on(expander, "click", expandFunction);
+      } else {
+        expander.onclick = function(e) {
+          if (entry.state && e.target === selectionElement)
+            e.preventDefault();
+          toggleFunction(e);
+        };
+      }
+    }
+  }
+  selectParentEntry(tr, builder, data) {
+    const expandedContent = tr.parentElement;
+    if (!expandedContent || !expandedContent.classList.contains("ui-treeview-expanded-content"))
+      return;
+    const parentEntry = expandedContent.previousElementSibling;
+    if (parentEntry && parentEntry.classList.contains("ui-treeview-entry")) {
+      const listElements = Array.from(this._container.querySelectorAll(`.ui-treeview-entry:not(.${this.PAGE_DIVIDER_ROW_CLASS})`));
+      const fromIndex = listElements.indexOf(tr);
+      const toIndex = listElements.indexOf(parentEntry);
+      if (toIndex >= 0)
+        this.changeFocusedRow(listElements, fromIndex, toIndex, builder, data);
+    }
+  }
+  selectFirstChild(tr, builder, data) {
+    const expandedContent = tr.nextElementSibling;
+    if (!expandedContent || !expandedContent.classList.contains("ui-treeview-expanded-content"))
+      return;
+    const firstChild = expandedContent.querySelector(".ui-treeview-entry");
+    if (firstChild) {
+      const listElements = Array.from(this._container.querySelectorAll(`.ui-treeview-entry:not(.${this.PAGE_DIVIDER_ROW_CLASS})`));
+      const fromIndex = listElements.indexOf(tr);
+      const toIndex = listElements.indexOf(firstChild);
+      if (toIndex >= 0)
+        this.changeFocusedRow(listElements, fromIndex, toIndex, builder, data);
+    }
+  }
+  setupEntryKeyboardEvents(tr, entry, selectionElement, expander, clickFunction, doubleClickFunction, builder, data) {
+    if (entry.enabled === false)
+      return;
+    tr.addEventListener("keydown", (event) => {
+      let preventDef = false;
+      if (this._gridMode && (event.key === "F2" || event.key === "Enter")) {
+        this.startEditingActiveCell(tr, entry, builder, data);
+        preventDef = true;
+      } else if (this._gridMode && event.key === " ") {
+        preventDef = true;
+      } else if (event.key === " " && expander) {
+        expander.click();
+        preventDef = true;
+      } else if (event.key === "Enter") {
+        if (this._singleClickActivate)
+          clickFunction(event);
+        else
+          doubleClickFunction(event);
+        if (selectionElement)
+          selectionElement.click();
+        if (expander) {
+          expander.click();
+        }
+        preventDef = true;
+      } else if (event.key === " ") {
+        clickFunction(event);
+        if (selectionElement)
+          selectionElement.click();
+        if (expander) {
+          expander.click();
+        }
+        preventDef = true;
+      } else if (event.key === "ArrowLeft") {
+        if (this._gridMode) {
+          preventDef = this.moveActiveCell(tr, 0, -1, false, builder, data, entry);
+        } else {
+          if (expander && !window.L.DomUtil.hasClass(tr, "collapsed")) {
+            expander.click();
+          } else {
+            this.selectParentEntry(tr, builder, data);
+          }
+          preventDef = true;
+        }
+      } else if (event.key === "ArrowRight") {
+        if (this._gridMode) {
+          preventDef = this.moveActiveCell(tr, 0, 1, false, builder, data, entry);
+        } else {
+          if (expander && window.L.DomUtil.hasClass(tr, "collapsed")) {
+            expander.click();
+          } else if (expander && !window.L.DomUtil.hasClass(tr, "collapsed")) {
+            this.selectFirstChild(tr, builder, data);
+          }
+          preventDef = true;
+        }
+      } else if (event.key === "Tab") {
+        if (!this._gridMode && !window.L.DomUtil.hasClass(tr, "selected"))
+          this.unselectEntry(tr);
+      }
+      if (preventDef) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    });
+  }
+  toggleEntry(span, treeViewData, entry, builder) {
+    if (entry.enabled === false)
+      return;
+    if (window.L.DomUtil.hasClass(span, "collapsed")) {
+      builder.callback("treeview", "expand", treeViewData, entry.row, builder);
+      span.setAttribute("aria-expanded", "true");
+    } else {
+      builder.callback("treeview", "collapse", treeViewData, entry.row, builder);
+      span.setAttribute("aria-expanded", "false");
+    }
+    $(span).toggleClass("collapsed");
+  }
+  expandEntry(span, treeViewData, entry, builder) {
+    if (entry.enabled === false)
+      return;
+    if (entry.ondemand && window.L.DomUtil.hasClass(span, "collapsed"))
+      builder.callback("treeview", "expand", treeViewData, entry.row, builder);
+    $(span).toggleClass("collapsed");
+    if (window.L.DomUtil.hasClass(span, "collapsed"))
+      span.setAttribute("aria-expanded", "false");
+    else
+      span.setAttribute("aria-expanded", "true");
+  }
+  selectEntry(span, checkbox, shouldFocus = false) {
+    window.L.DomUtil.addClass(span, "selected");
+    span.setAttribute("aria-selected", "true");
+    if (!this._gridMode) {
+      this._container.querySelectorAll('.ui-treeview-entry[tabindex="0"]').forEach((item) => item.tabIndex = -1);
+      span.tabIndex = 0;
+      if (shouldFocus)
+        span.focus();
+    }
+    if (checkbox)
+      checkbox.removeAttribute("tabindex");
+  }
+  selectEntryByRow(row, shouldFocus = false) {
+    if (this._container.querySelector(".ui-treeview-inline-edit"))
+      return;
+    const rowElement = this._rows.get(String(row));
+    if (!rowElement) {
+      console.warn('TreeView onSelect: row "' + row + '" not found');
+      return;
+    }
+    const hadFocus = this._container.contains(document.activeElement);
+    this._container.querySelectorAll(".ui-treeview-entry.selected").forEach((item) => {
+      this.unselectEntry(item);
+    });
+    if (this._gridMode) {
+      this._container.querySelectorAll(".ui-treeview-cell-active").forEach((el) => el.classList.remove("ui-treeview-cell-active"));
+    }
+    const checkbox = rowElement.querySelector("input");
+    this.selectEntry(rowElement, checkbox, shouldFocus || hadFocus);
+    if (this._gridMode)
+      this.updateActiveCellMarker(rowElement, this._activeColumn, shouldFocus || hadFocus);
+  }
+  unselectEntry(item) {
+    window.L.DomUtil.removeClass(item, "selected");
+    item.removeAttribute("aria-selected");
+    item.tabIndex = -1;
+    var itemCheckbox = item.querySelector("input");
+    if (itemCheckbox)
+      itemCheckbox.tabIndex = -1;
+    if (this._gridMode) {
+      this.getRowCells(item).forEach((c) => {
+        c.classList.remove("ui-treeview-cell-active");
+        c.tabIndex = -1;
+      });
+    }
+  }
+  createClickFunction(parentContainer, checkbox, select, activate, builder, treeViewData, entry) {
+    return (e) => {
+      if (e && e.target === checkbox)
+        return;
+      if (e && window.L.DomUtil.hasClass(parentContainer, "disabled")) {
+        e.preventDefault();
+        return;
+      }
+      this._container.querySelectorAll(".ui-treeview-entry.selected").forEach((item) => {
+        this.unselectEntry(item);
+      });
+      this.selectEntry(parentContainer, checkbox, true);
+      if (checkbox && (!e || e.target === checkbox))
+        this.changeCheckboxStateOnClick(checkbox, treeViewData, builder, entry);
+      let cell = this.getTextCellForElement(e.target);
+      let column;
+      let editable = false;
+      if (cell) {
+        column = this.getColumnForCell(entry, cell);
+        editable = this.canEdit(entry, column);
+      }
+      if (column == null && e instanceof MouseEvent && this._gridMode) {
+        const row = parentContainer;
+        const cells = row.querySelectorAll(':scope > [role="gridcell"], :scope > [role="rowheader"]');
+        for (let i = 0; i < cells.length; i++) {
+          const rect = cells[i].getBoundingClientRect();
+          if (e.clientX >= rect.left && e.clientX < rect.right) {
+            column = i;
+            editable = this.canEdit(entry, column);
+            const spans = cells[i].getElementsByClassName("ui-treeview-cell-text-content");
+            if (spans.length === 1)
+              cell = spans[0];
+            break;
+          }
+        }
+      }
+      if (select) {
+        const selectData = column != null && this._gridMode ? { row: entry.row, col: column } : entry.row;
+        builder.callback("treeview", "select", treeViewData, selectData, builder);
+      }
+      if (this._gridMode && column != null) {
+        if (column >= 1)
+          this.setActiveColumn(column);
+        this.updateActiveCellMarker(parentContainer, Math.max(1, this._activeColumn));
+      }
+      if (column != null && this._thead) {
+        this._thead.querySelectorAll(".ui-treeview-header").forEach((h) => h.classList.remove("selected"));
+        const headers = this._thead.querySelectorAll(".ui-treeview-header");
+        if (headers[column])
+          headers[column].classList.add("selected");
+      }
+      const inlineEditable = editable && this._gridMode;
+      if (!inlineEditable && activate)
+        builder.callback("treeview", "activate", treeViewData, entry.row, builder);
+      if (inlineEditable && activate && cell)
+        this.startEditing(builder, cell, column, entry, parentContainer, treeViewData);
+    };
+  }
+  getTextCellForElement(element) {
+    const textCells = Array.from(element.getElementsByClassName("ui-treeview-cell-text-content"));
+    if (element.classList.contains("ui-treeview-cell-text-content")) {
+      textCells.push(element);
+    }
+    if (textCells.length !== 1) {
+      return null;
+    }
+    const cell = textCells[0];
+    return cell;
+  }
+  getColumnForCell(entry, cell) {
+    let column;
+    for (const className of Array.from(cell.classList)) {
+      const prefix = `ui-treeview-${entry.row}-`;
+      if (className.startsWith(prefix)) {
+        column = parseInt(className.slice(prefix.length));
+      }
+    }
+    if (column === void 0 || Number.isNaN(column)) {
+      return null;
+    }
+    if (column >= entry.columns.length) {
+      return null;
+    }
+    return column;
+  }
+  canEdit(entry, column) {
+    if (column === null || entry.columns[column].text === void 0) {
+      return false;
+    }
+    return !!entry.columns[column].editable;
+  }
+  getRowCells(tr) {
+    return Array.from(tr.querySelectorAll(':scope > [role="gridcell"], :scope > [role="rowheader"]'));
+  }
+  // Apply the active-cell marker class to the column-th cell of the row,
+  // clearing it from the other cells in the same row. The active cell is
+  // made focusable (tabindex) so DOM focus can sit on the cell itself
+  // rather than the whole row. Pass focus=true to move focus there now.
+  // Safe to call with an out-of-range column (clamped to [0, last]).
+  updateActiveCellMarker(tr, column, focus = false) {
+    if (!this._gridMode)
+      return;
+    const cells = this.getRowCells(tr);
+    if (!cells.length)
+      return;
+    const target = Math.max(1, Math.min(column, cells.length - 1));
+    tr.tabIndex = -1;
+    const newCell = cells[target];
+    newCell.classList.add("ui-treeview-cell-active");
+    newCell.tabIndex = 0;
+    if (focus)
+      newCell.focus({ preventScroll: false });
+    for (let i = 0; i < cells.length; i++) {
+      if (i === target)
+        continue;
+      cells[i].classList.remove("ui-treeview-cell-active");
+      cells[i].tabIndex = -1;
+    }
+  }
+  // Notify core of the keyboard-driven {row, col} change so that
+  // set_cursor_column() stays in sync (toolbar buttons like
+  // InsertColumn act on the cursor column).
+  notifyActiveCell(builder, data, entry, column) {
+    if (!this._gridMode)
+      return;
+    builder.callback("treeview", "select", data, { row: entry.row, col: column }, builder);
+  }
+  // Move the active cell by (rowDelta, colDelta) relative to the row
+  // currently holding focus and the stored _activeColumn. `wrap` controls
+  // what happens when the column delta walks off the row edge: true (Tab)
+  // wraps to the next/prev row, false (Arrow Left/Right) stops at the
+  // edge. Returns true if the move happened (caller should
+  // preventDefault); false at the grid's outer corner so Tab can fall
+  // through to default focus traversal.
+  moveActiveCell(tr, rowDelta, colDelta, wrap, builder, data, entry) {
+    if (!this._gridMode)
+      return false;
+    const cellsInRow = this.getRowCells(tr);
+    const colCount = cellsInRow.length;
+    const minCol = 1;
+    if (colCount <= minCol)
+      return false;
+    const listElements = Array.from(this._container.querySelectorAll(`.ui-treeview-entry:not(.${this.PAGE_DIVIDER_ROW_CLASS})`));
+    const fromIndex = listElements.indexOf(tr);
+    if (fromIndex < 0)
+      return false;
+    const currentCol = Math.max(minCol, this._activeColumn);
+    let newCol = currentCol + colDelta;
+    let newRowIndex = fromIndex + rowDelta;
+    if (colDelta !== 0 && rowDelta === 0) {
+      if (newCol >= colCount) {
+        if (!wrap)
+          return true;
+        if (fromIndex >= listElements.length - 1)
+          return false;
+        newCol = minCol;
+        newRowIndex = fromIndex + 1;
+      } else if (newCol < minCol) {
+        if (!wrap)
+          return true;
+        if (fromIndex <= 0)
+          return false;
+        newCol = colCount - 1;
+        newRowIndex = fromIndex - 1;
+      }
+    }
+    if (newRowIndex < 0 || newRowIndex >= listElements.length)
+      return false;
+    if (newCol < minCol || newCol >= colCount)
+      return false;
+    this.setActiveColumn(newCol);
+    if (newRowIndex !== fromIndex) {
+      this.changeFocusedRow(listElements, fromIndex, newRowIndex, builder, data);
+      this.updateActiveCellMarker(listElements[newRowIndex], newCol);
+      const newEntry = this.findEntryWithRow(data.entries, listElements[newRowIndex]._row);
+      if (newEntry)
+        this.notifyActiveCell(builder, data, newEntry, newCol);
+    } else {
+      this.updateActiveCellMarker(tr, newCol, true);
+      this.notifyActiveCell(builder, data, entry, newCol);
+    }
+    return true;
+  }
+  // Start inline editing of the keyboard-active cell of the given row,
+  // if that cell is editable. Used by Enter/F2 in grid mode.
+  startEditingActiveCell(tr, entry, builder, treeViewData) {
+    if (!this._gridMode)
+      return;
+    if (!this.canEdit(entry, this._activeColumn))
+      return;
+    const cell = tr.querySelector(`.ui-treeview-${entry.row}-${this._activeColumn}`);
+    if (cell)
+      this.startEditing(builder, cell, this._activeColumn, entry, tr, treeViewData);
+  }
+  // Reactive handler for core's 'reedit_cell' action: after a rejected
+  // numeric edit, Tab has already optimistically moved focus to the next
+  // cell; once the user dismisses the warning popup, core asks us to put
+  // the user back on the rejected cell (row, col) in edit mode.
+  reeditCell(row, col, builder, data) {
+    if (!this._gridMode)
+      return;
+    const openInput = this._container.querySelector(".ui-treeview-inline-edit");
+    if (openInput)
+      openInput.blur();
+    const rowElement = this._rows.get(String(row));
+    if (!rowElement)
+      return;
+    const entry = this.findEntryWithRow(data.entries, row);
+    if (!entry)
+      return;
+    this.setActiveColumn(col);
+    this.selectEntryByRow(row, true);
+    this.updateActiveCellMarker(rowElement, col, true);
+    this.startEditingActiveCell(rowElement, entry, builder, data);
+  }
+  startEditing(builder, cell, column, entry, parentContainer, treeViewData) {
+    var _a, _b, _c, _d;
+    for (const child of Array.from(cell.childNodes)) {
+      if (child instanceof HTMLElement)
+        child.style.visibility = "hidden";
+      else if (child.nodeType === Node.TEXT_NODE) {
+        const wrapper = document.createElement("span");
+        wrapper.style.visibility = "hidden";
+        wrapper.textContent = child.textContent;
+        child.replaceWith(wrapper);
+      }
+    }
+    const rowShouldBeDraggable = parentContainer.draggable;
+    const gridCell = cell.closest('[role="gridcell"], [role="rowheader"]');
+    const posParent = gridCell || cell;
+    posParent.style.position = "relative";
+    const input = document.createElement("input");
+    input.className = "ui-treeview-inline-edit";
+    input.value = entry.columns[column].text;
+    const headerInfo = (_a = treeViewData.headers) == null ? void 0 : _a[column];
+    const columnLabel = (headerInfo == null ? void 0 : headerInfo.headerName) || (headerInfo == null ? void 0 : headerInfo.text) || _("Cell value");
+    let rowLabel = _("row %1").replace("%1", String(Number(entry.row) + 1));
+    for (let c = 1; c < entry.columns.length; c++) {
+      if (!((_c = (_b = treeViewData.headers) == null ? void 0 : _b[c]) == null ? void 0 : _c.headerName) && ((_d = entry.columns[c]) == null ? void 0 : _d.text)) {
+        rowLabel = entry.columns[c].text;
+        break;
+      }
+    }
+    input.setAttribute("aria-label", _("%1, %2").replace("%1", columnLabel).replace("%2", rowLabel));
+    input.enterKeyHint = "done";
+    let cancelledUpdate = false;
+    input.addEventListener("keydown", (e) => {
+      if (e.code === "Enter") {
+        if (this._gridMode) {
+          e.preventDefault();
+          input.blur();
+          this.updateActiveCellMarker(parentContainer, this._activeColumn, true);
+        } else {
+          input.blur();
+        }
+      } else if (e.code === "Escape") {
+        cancelledUpdate = true;
+        input.blur();
+        if (this._gridMode) {
+          e.preventDefault();
+          this.updateActiveCellMarker(parentContainer, this._activeColumn, true);
+        }
+      } else if (e.code === "Tab" && this._gridMode && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        const direction = e.shiftKey ? -1 : 1;
+        input.blur();
+        const moved = this.moveActiveCell(parentContainer, 0, direction, true, builder, treeViewData, entry);
+        if (moved) {
+          const focused = document.activeElement;
+          const newRow = (focused == null ? void 0 : focused.closest(".ui-treeview-entry")) || parentContainer;
+          const newEntry = this.findEntryWithRow(treeViewData.entries, newRow._row);
+          if (newEntry)
+            this.startEditingActiveCell(newRow, newEntry, builder, treeViewData);
+        }
+      }
+      e.stopImmediatePropagation();
+    }, { capture: true });
+    const conflictingEventTypes = ["click", "dblclick"];
+    for (const eventType of conflictingEventTypes) {
+      input.addEventListener(eventType, (e) => {
+        e.stopPropagation();
+      });
+    }
+    input.addEventListener("blur", () => {
+      if (this._gridMode && !document.hasFocus())
+        return;
+      this.endEditing(builder, cancelledUpdate, cell, column, entry, input, parentContainer, posParent, rowShouldBeDraggable, treeViewData);
+    });
+    parentContainer.draggable = false;
+    parentContainer.parentElement.onFocus = () => {
+    };
+    posParent.appendChild(input);
+    input.focus();
+  }
+  endEditing(builder, cancelledUpdate, cell, column, entry, input, parentContainer, posParent, rowShouldBeDraggable, treeViewData) {
+    parentContainer.draggable = rowShouldBeDraggable;
+    parentContainer.parentElement.onFocus = () => {
+    };
+    posParent.style.position = "";
+    input.remove();
+    const newValue = cancelledUpdate ? entry.columns[column].text : input.value;
+    cell.textContent = newValue;
+    if (cancelledUpdate)
+      return;
+    this.commitEditValue(builder, treeViewData, entry, column, input.value);
+  }
+  // Send the edited cell value to core (set_cursor cell -> set_text).
+  // Shared by endEditing (editor closes) and the grid Enter handler
+  // (editor stays open).
+  commitEditValue(builder, treeViewData, entry, column, value) {
+    if (entry.columns && entry.columns[column])
+      entry.columns[column].text = value;
+    builder.callback("treeview", "editend", treeViewData, { row: entry.row, column, value }, builder);
+  }
+  filterEntries(filter, immediately = false) {
+    if (this._filterTimer)
+      clearTimeout(this._filterTimer);
+    var entriesToHide = [];
+    var allEntries = this._container.querySelectorAll(".ui-treeview-entry");
+    filter = filter.trim();
+    allEntries.forEach((entry) => {
+      if (filter === "")
+        return;
+      var cells = entry.querySelectorAll("div");
+      for (var i in cells) {
+        var entryText = cells[i].innerText;
+        if (entryText && entryText.toLowerCase().indexOf(filter.toLowerCase()) >= 0) {
+          return;
+        }
+      }
+      entriesToHide.push(entry);
+    });
+    const hideEntries = () => {
+      allEntries.forEach((entry) => {
+        window.L.DomUtil.removeClass(entry, "hidden");
+      });
+      entriesToHide.forEach((entry) => {
+        window.L.DomUtil.addClass(entry, "hidden");
+      });
+    };
+    if (immediately)
+      hideEntries();
+    else
+      this._filterTimer = setTimeout(hideEntries, 100);
+  }
+  highlightEntries(searchTerm) {
+    app.layoutingService.appendLayoutingTask(() => {
+      var entriesToHighlight = [];
+      var allEntries = this._container.querySelectorAll(".ui-treeview-entry");
+      searchTerm = searchTerm.trim();
+      allEntries.forEach((entry) => {
+        if (searchTerm === "")
+          return;
+        var cells = entry.querySelectorAll("div");
+        for (var i in cells) {
+          var entryText = cells[i].innerText;
+          if (entryText && entryText.toLowerCase().indexOf(searchTerm.toLowerCase()) >= 0) {
+            entriesToHighlight.push(entry);
+          }
+        }
+        return;
+      });
+      allEntries.forEach((entry) => {
+        window.L.DomUtil.removeClass(entry, "highlighted");
+      });
+      entriesToHighlight.forEach((entry) => {
+        window.L.DomUtil.addClass(entry, "highlighted");
+      });
+    });
+  }
+  setupKeyEvents(data, builder) {
+    this._container.addEventListener("keydown", (event) => {
+      const listElements = this._container.querySelectorAll(`.ui-treeview-entry:not(.${this.PAGE_DIVIDER_ROW_CLASS})`);
+      this.handleKeyEvent(event, listElements, builder, data);
+    });
+  }
+  setupFocusOutHandler() {
+    this._container.addEventListener("focusout", (event) => {
+      app.layoutingService.appendLayoutingTask(() => {
+        const activeElement = document.activeElement;
+        const isFocusInTreeView = activeElement && this._container.contains(activeElement);
+        if (!isFocusInTreeView) {
+          const listElements = this._container.querySelectorAll(`.ui-treeview-entry:not(.${this.PAGE_DIVIDER_ROW_CLASS})`);
+          this.restoreInitialTabIndexes(Array.from(listElements));
+        }
+      });
+    });
+  }
+  restoreInitialTabIndexes(listElements) {
+    var selectedEntry = null;
+    listElements.forEach((entry) => {
+      if (entry.classList.contains("selected"))
+        selectedEntry = entry;
+      entry.tabIndex = -1;
+    });
+    if (this._gridMode) {
+      return;
+    }
+    if (selectedEntry)
+      selectedEntry.tabIndex = 0;
+    else if (listElements.length > 0)
+      listElements[0].tabIndex = 0;
+  }
+  changeFocusedRow(listElements, fromIndex, toIndex, builder, data) {
+    var nextElement = listElements.at(toIndex);
+    if (this._gridMode) {
+      if (fromIndex >= 0) {
+        const oldRow = listElements.at(fromIndex);
+        this.getRowCells(oldRow).forEach((c) => {
+          c.classList.remove("ui-treeview-cell-active");
+          c.tabIndex = -1;
+        });
+      }
+      this.updateActiveCellMarker(nextElement, this._activeColumn, true);
+    } else {
+      nextElement.tabIndex = 0;
+      nextElement.focus();
+    }
+    if (data.serverSyncSelection !== false) {
+      builder.callback("treeview", "select", data, nextElement._row, builder);
+    }
+    var nextInput = Array.from(listElements.at(toIndex).querySelectorAll(".ui-treeview-entry > div > input"));
+    if (nextInput && nextInput.length)
+      nextInput.at(0).removeAttribute("tabindex");
+    if (fromIndex >= 0) {
+      var oldElement = listElements.at(fromIndex);
+      oldElement.tabIndex = -1;
+      var oldInput = Array.from(listElements.at(fromIndex).querySelectorAll(".ui-treeview-entry > div > input"));
+      if (oldInput && oldInput.length)
+        oldInput.at(0).tabIndex = -1;
+    }
+  }
+  getCurrentEntry(listElements) {
+    var focusedElement = document.activeElement;
+    var currIndex = listElements.indexOf(focusedElement);
+    if (currIndex < 0 && focusedElement) {
+      const row = focusedElement.closest(".ui-treeview-entry");
+      if (row)
+        currIndex = listElements.indexOf(row);
+    }
+    if (currIndex < 0)
+      currIndex = listElements.indexOf(focusedElement.parentNode.parentNode);
+    if (currIndex < 0) {
+      var selected = listElements.filter((o) => {
+        return o.classList.contains("selected");
+      });
+      if (selected && selected.length)
+        currIndex = listElements.indexOf(selected[0]);
+    }
+    if (currIndex < 0) {
+      for (var i in listElements) {
+        var parent = listElements[i].parentNode;
+        if (parent)
+          parent = parent.parentNode;
+        else
+          break;
+        if (parent && window.L.DomUtil.hasClass(parent, "selected")) {
+          currIndex = listElements.indexOf(listElements[i]);
+          break;
+        }
+      }
+    }
+    return currIndex;
+  }
+  typeAheadSearch(listElements, currIndex, char, builder, data) {
+    if (this._typeAheadTimer)
+      clearTimeout(this._typeAheadTimer);
+    this._typeAheadTimer = setTimeout(() => {
+      this._typeAheadText = "";
+    }, this.TYPE_AHEAD_RESET_TIMEOUT);
+    this._typeAheadText += char.toLowerCase();
+    const search = this._typeAheadText;
+    const startIndex = search.length > 1 ? Math.max(currIndex, 0) : currIndex >= 0 ? currIndex + 1 : 0;
+    const total = listElements.length;
+    for (let i = 0; i < total; i++) {
+      const index = (startIndex + i) % total;
+      const el = listElements[index];
+      if (el.clientHeight <= 0)
+        continue;
+      const text = el.innerText.trim().toLowerCase();
+      const matches = this._isListbox ? text.indexOf(search) >= 0 : text.startsWith(search);
+      if (matches) {
+        this.changeFocusedRow(listElements, currIndex, index, builder, data);
+        return;
+      }
+    }
+  }
+  expandSiblings(listElements, currIndex, data, builder) {
+    if (currIndex < 0)
+      return;
+    const currentEntry = listElements[currIndex];
+    const level = currentEntry.getAttribute("aria-level");
+    if (!level)
+      return;
+    const parent = currentEntry.parentElement;
+    if (!parent)
+      return;
+    const siblings = parent.querySelectorAll(".ui-treeview-entry");
+    siblings.forEach((sibling) => {
+      if (sibling.getAttribute("aria-level") === level && sibling.classList.contains("collapsed") && sibling.hasAttribute("aria-expanded")) {
+        const row = sibling._row;
+        builder.callback("treeview", "expand", data, row, builder);
+        sibling.classList.remove("collapsed");
+        sibling.setAttribute("aria-expanded", "true");
+      }
+    });
+  }
+  handleKeyEvent(event, nodeList, builder, data) {
+    var preventDef = false;
+    var listElements = Array.from(nodeList);
+    var treeLength = listElements.length;
+    var currIndex = this.getCurrentEntry(listElements);
+    if (event.key === "ArrowDown") {
+      if (currIndex < 0)
+        this.changeFocusedRow(listElements, currIndex, 0, builder, data);
+      else {
+        var nextIndex = currIndex + 1;
+        while (nextIndex < treeLength - 1 && listElements[nextIndex].clientHeight <= 0)
+          nextIndex++;
+        if (nextIndex < treeLength)
+          this.changeFocusedRow(listElements, currIndex, nextIndex, builder, data);
+      }
+      preventDef = true;
+    } else if (event.key === "ArrowUp") {
+      if (currIndex < 0)
+        this.changeFocusedRow(listElements, currIndex, treeLength - 1, builder, data);
+      else {
+        var nextIndex = currIndex - 1;
+        while (nextIndex >= 0 && listElements[nextIndex].clientHeight <= 0)
+          nextIndex--;
+        if (nextIndex >= 0)
+          this.changeFocusedRow(listElements, currIndex, nextIndex, builder, data);
+        else {
+          const searchInput = this._container.querySelector(".ui-treeview-search-input");
+          if (searchInput)
+            searchInput.focus();
+        }
+      }
+      preventDef = true;
+    } else if (event.key === "Home") {
+      var firstIndex = 0;
+      while (firstIndex < treeLength - 1 && listElements[firstIndex].clientHeight <= 0)
+        firstIndex++;
+      if (firstIndex < treeLength)
+        this.changeFocusedRow(listElements, currIndex, firstIndex, builder, data);
+      preventDef = true;
+    } else if (event.key === "End") {
+      var lastIndex = treeLength - 1;
+      while (lastIndex > 0 && listElements[lastIndex].clientHeight <= 0)
+        lastIndex--;
+      if (lastIndex >= 0)
+        this.changeFocusedRow(listElements, currIndex, lastIndex, builder, data);
+      preventDef = true;
+    } else if (event.key === "*") {
+      this.expandSiblings(listElements, currIndex, data, builder);
+      preventDef = true;
+    } else if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.altKey && !event.metaKey && !_TreeViewControl.isEditableTarget(event.target)) {
+      this.typeAheadSearch(listElements, currIndex, event.key, builder, data);
+      preventDef = true;
+    } else if (data.fireKeyEvents && // FIXME: can callback return boolean?
+    builder.callback("treeview", "keydown", { id: data.id, key: event.key }, currIndex, builder)) {
+      preventDef = true;
+    }
+    if (preventDef) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+  static isRealTree(data) {
+    if (data.role)
+      return data.role === "tree" || data.role === "treegrid";
+    let isRealTreeView = false;
+    for (var i in data.entries) {
+      if (data.entries[i].children && data.entries[i].children.length) {
+        isRealTreeView = true;
+        break;
+      }
+    }
+    return isRealTreeView;
+  }
+  getSortComparator(columnIndex, up) {
+    return (a, b) => {
+      if (!a || !b)
+        return 0;
+      var tda = a.querySelectorAll("div").item(columnIndex);
+      var tdb = b.querySelectorAll("div").item(columnIndex);
+      if (tda.querySelector("input")) {
+        if (tda.querySelector("input").checked === tdb.querySelector("input").checked)
+          return 0;
+        if (up) {
+          if (tda.querySelector("input").checked > tdb.querySelector("input").checked)
+            return 1;
+          else
+            return -1;
+        } else if (tdb.querySelector("input").checked > tda.querySelector("input").checked)
+          return 1;
+        else
+          return -1;
+      }
+      if (up)
+        return tdb.innerText.toLowerCase().localeCompare(tda.innerText.toLowerCase());
+      else
+        return tda.innerText.toLowerCase().localeCompare(tdb.innerText.toLowerCase());
+    };
+  }
+  sortByColumn(icon, columnIndex, up) {
+    this.clearSorting();
+    window.L.DomUtil.addClass(icon, up ? "up" : "down");
+    const headerEl = icon.closest(".ui-treeview-header");
+    if (headerEl) {
+      headerEl.setAttribute("aria-sort", up ? "ascending" : "descending");
+    }
+    var toSort = [];
+    const container = this._container;
+    container.querySelectorAll(":not(.ui-treeview-expanded-content) .ui-treeview-entry").forEach((item) => {
+      toSort.push(item);
+      container.removeChild(item);
+    });
+    toSort.sort(this.getSortComparator(columnIndex, up));
+    toSort.forEach((item) => {
+      container.insertBefore(item, container.lastChild.nextSibling);
+    });
+  }
+  clearSorting() {
+    var icons = this._thead.querySelectorAll(".ui-treeview-header-sort-icon");
+    icons.forEach((icon) => {
+      window.L.DomUtil.removeClass(icon, "down");
+      window.L.DomUtil.removeClass(icon, "up");
+    });
+    var headers = this._thead.querySelectorAll(".ui-treeview-header");
+    headers.forEach((header) => {
+      header.removeAttribute("aria-sort");
+    });
+  }
+  // The grid columns ahead of the columns of an entry: one for the checkbox
+  // and one for the expander, when the tree has them.
+  getLeadingColumns() {
+    return (this._hasState ? 1 : 0) + (this._hasExpanderColumn ? 1 : 0);
+  }
+  fillHeaders(data, headers, builder) {
+    if (!headers)
+      return;
+    this._thead = window.L.DomUtil.create("div", "ui-treeview-headers", this._container);
+    this._thead.setAttribute("role", "row");
+    let dummyCells = this._columns - headers.length;
+    if (this._hasState)
+      dummyCells++;
+    this._thead.style.gridColumn = "1 / " + (this._columns + this.getLeadingColumns() + 1);
+    if (this._hasState) {
+      this.fillHeader({ text: "", sortable: false }, builder);
+      window.L.DomUtil.addClass(this._thead.lastChild, "ui-treeview-state-column");
+    }
+    if (this._hasExpanderColumn) {
+      this.fillHeader({ text: "", sortable: false }, builder);
+      window.L.DomUtil.addClass(this._thead.lastChild, "ui-treeview-expander-column");
+    }
+    const iconCells = this._columns - headers.length;
+    if (!headers.length)
+      for (let index = 0; index < iconCells; index++) {
+        this.fillHeader({ text: "", sortable: false }, builder);
+        window.L.DomUtil.addClass(this._thead.lastChild, "ui-treeview-icon-column");
+      }
+    for (const index in headers) {
+      this.fillHeader(headers[index], builder, data, parseInt(index));
+      if (index === "0" && iconCells > 0)
+        this._thead.lastChild.style.gridColumn = "span " + (iconCells + 1);
+      const column = parseInt(index) + this._columns - headers.length;
+      if (this._toggleColumns.has(column))
+        window.L.DomUtil.addClass(this._thead.lastChild, "ui-treeview-toggle-column");
+      if (headers[index].sortable === false)
+        continue;
+      var clickFunction = (columnIndex, icon) => {
+        return () => {
+          if (data.sortLocally) {
+            if (window.L.DomUtil.hasClass(icon, "down"))
+              this.sortByColumn(icon, columnIndex + dummyCells, true);
+            else
+              this.sortByColumn(icon, columnIndex + dummyCells, false);
+          } else
+            builder.callback("treeview", "columnclick", data, index, builder);
+        };
+      };
+      const lastHeader = this._thead.lastChild;
+      const button = lastHeader.querySelector(".ui-treeview-header-button");
+      button.onclick = clickFunction(parseInt(index), lastHeader.querySelector(".ui-treeview-header-sort-icon"));
+    }
+  }
+  makeEmptyList(data, builder) {
+    if (data.id === "contenttree") {
+      var tr = window.L.DomUtil.create("div", builder.options.cssClass + " ui-treview-entry ui-treeview-placeholder", this._container);
+      tr.innerText = _("Headings and objects that you add to the document will appear here");
+    } else {
+      window.L.DomUtil.addClass(this._container, "empty");
+      if (data.hideIfEmpty)
+        window.L.DomUtil.addClass(this._container, "hidden");
+    }
+  }
+  // when no entry is selected - allow first one to be focusable
+  makeTreeViewFocusable(enable) {
+    const firstElement = this._container.querySelector(`.ui-treeview-entry:not(.${this.PAGE_DIVIDER_ROW_CLASS})`);
+    if (firstElement) {
+      if (enable)
+        firstElement.tabIndex = 0;
+      else
+        firstElement.removeAttribute("tabindex");
+    }
+  }
+  fillEntries(data, entries, builder, level, parent, selection = { hasSelectedEntry: false }) {
+    const isMenu = _TreeViewControl.isMenu(data);
+    for (const index in entries) {
+      if (isMenu && entries[index].enabled === false)
+        continue;
+      if (entries[index].selected)
+        selection.hasSelectedEntry = true;
+      this.fillEntry(data, entries[index], builder, level, parent, selection);
+    }
+    if (entries && entries.length === 0)
+      this.makeEmptyList(data, builder);
+    if (level === 1 && !selection.hasSelectedEntry)
+      this.makeTreeViewFocusable(true);
+  }
+  showSearchBar(parent) {
+    const searchBox = document.createElement("input");
+    searchBox.id = this._container.id + "-search-input";
+    searchBox.type = "search";
+    searchBox.setAttribute("class", "jsdialog ui-edit ui-treeview-search-input");
+    searchBox.setAttribute("aria-label", _("Search items"));
+    searchBox.setAttribute("aria-controls", this._container.id);
+    searchBox.placeholder = _("Search...");
+    searchBox.addEventListener("input", () => this.filterEntries(searchBox.value));
+    const previousSearchBox = document.getElementById(searchBox.id);
+    if (previousSearchBox && previousSearchBox.value) {
+      searchBox.value = previousSearchBox.value;
+      this.filterEntries(searchBox.value, true);
+    }
+    const searchContainer = document.createElement("div");
+    searchContainer.className = "ui-treeview-search-container";
+    searchContainer.style.gridColumn = "1 / " + this._maxColumnsIncludingState;
+    searchContainer.appendChild(searchBox);
+    parent.insertAdjacentElement("afterbegin", searchContainer);
+  }
+  fillEntry(data, entry, builder, level, parent, selection) {
+    const entryElements = new Array();
+    const row = this.fillRow(data, entry, builder, level, parent);
+    entryElements.push(row);
+    if (entry.children && entry.children.length) {
+      window.L.DomUtil.addClass(row, "ui-treeview-expandable");
+      const subGrid = window.L.DomUtil.create("div", "ui-treeview-expanded-content", parent);
+      if (this._containerRole === "tree")
+        subGrid.setAttribute("role", "group");
+      else if (this._containerRole === "treegrid")
+        subGrid.setAttribute("role", "rowgroup");
+      entryElements.push(subGrid);
+      const dummyColumns = this.getLeadingColumns();
+      subGrid.style.gridColumn = "1 / " + (this._columns + dummyColumns + 1);
+      if (this._columns + dummyColumns + 1 > this._maxColumnsIncludingState) {
+        this._maxColumnsIncludingState = this._columns + dummyColumns + 1;
+      }
+      this.fillEntries(data, entry.children, builder, level + 1, subGrid, selection);
+    }
+    return entryElements;
+  }
+  getColumnType(column) {
+    const isString = column.link || column.text;
+    const isIcon = column.collapsed || column.collapsedimage || column.expanded || column.expandedimage;
+    let columnType = "unknown";
+    if (this.isSeparator(column))
+      columnType = "separator";
+    else if (isString)
+      columnType = "string";
+    else if (isIcon)
+      columnType = "icon";
+    return columnType;
+  }
+  preprocessColumnData(entires) {
+    if (!entires || !entires.length)
+      return;
+    const columnTypes = entires.map((entry) => {
+      const currentTypes = new Array();
+      entry.columns.forEach((column) => {
+        currentTypes.push(this.getColumnType(column));
+      });
+      return currentTypes;
+    }).reduce((prev, next) => {
+      if (!next || prev.length > next.length)
+        return prev;
+      return next;
+    });
+    entires.forEach((entry) => {
+      const existingColumns = entry.columns;
+      const missingColumns = columnTypes.length - existingColumns.length;
+      if (missingColumns <= 0)
+        return;
+      const newColumns = Array();
+      let targetIndex = 0;
+      let existingIndex = 0;
+      while (targetIndex < columnTypes.length) {
+        const isExistingColumn = existingIndex < existingColumns.length;
+        const currentType = isExistingColumn ? this.getColumnType(existingColumns[existingIndex]) : "unknown";
+        if (currentType === "separator")
+          break;
+        if (!isExistingColumn || currentType !== columnTypes[targetIndex]) {
+          newColumns.push({ text: "" });
+        } else {
+          newColumns.push(existingColumns[existingIndex]);
+          existingIndex++;
+        }
+        targetIndex++;
+      }
+      entry.columns = newColumns;
+    });
+  }
+  static isMenu(data) {
+    if (data.type === "menu")
+      return true;
+    return false;
+  }
+  // True when the key was typed into a text field, such as the tree's own
+  // search box, where it should edit that field rather than jump in the list.
+  static isEditableTarget(target) {
+    const element = target;
+    if (!element || !element.tagName)
+      return false;
+    const tag = element.tagName.toLowerCase();
+    return tag === "input" || tag === "textarea" || element.isContentEditable;
+  }
+  static hasSearchField(data) {
+    return !data.noSearchField && !_TreeViewControl.isMenu(data) && _TreeViewControl.isListbox(data) && data.entries && data.entries.length > 25;
+  }
+  static isListbox(data) {
+    if (data.role)
+      return data.role === "listbox";
+    if (_TreeViewControl.isRealTree(data))
+      return false;
+    const columns = _TreeViewControl.countColumns(data);
+    if (columns !== 1)
+      return false;
+    if (data.headers && data.headers.length > 0)
+      return false;
+    if (data.entries) {
+      for (const entry of data.entries) {
+        if (entry.children && entry.children.length > 0)
+          return false;
+      }
+    }
+    return true;
+  }
+  focusSelectedRow() {
+    if (this._gridMode)
+      return;
+    if (this._container.classList.contains("sidebar"))
+      return;
+    if (this._container.querySelector(".ui-treeview-inline-edit"))
+      return;
+    const selected = this._container.querySelector(".ui-treeview-entry.selected");
+    if (!selected)
+      return;
+    selected.focus({ preventScroll: true });
+    const blockOption = JSDialog.ScrollIntoViewBlockOption("nearest");
+    selected.scrollIntoView({ block: blockOption, inline: "nearest" });
+  }
+  build(data, builder, parentContainer) {
+    this._isRealTree = _TreeViewControl.isRealTree(data);
+    this._isListbox = _TreeViewControl.isListbox(data);
+    this._columns = _TreeViewControl.countColumns(data);
+    this._hasState = _TreeViewControl.hasState(data);
+    this._hasExpanderColumn = this._isRealTree && !!data.headers && data.headers.length > 0;
+    this._hasIcon = _TreeViewControl.hasIcon(data);
+    this._toggleColumns = _TreeViewControl.getToggleColumns(data);
+    this._isNavigator = this.isNavigator(data);
+    this._singleClickActivate = _TreeViewControl.isSingleClickActivate(data);
+    this._containerRole = data.role || (this._isRealTree ? this._isNavigator ? "tree" : "treegrid" : this._isListbox ? "listbox" : "grid");
+    this._tbody = this._container;
+    this._container.onSelect = (position) => {
+      this.selectEntryByRow(position, false);
+    };
+    this._container.onReeditCell = (row, col) => {
+      this.reeditCell(row, col, builder, data);
+    };
+    this._container.filterEntries = this.filterEntries.bind(this);
+    this._container.highlightEntries = this.highlightEntries.bind(this);
+    this._container.onFocus = () => this.focusSelectedRow();
+    this.setupDragAndDrop(data, builder);
+    this.setupKeyEvents(data, builder);
+    this.setupFocusOutHandler();
+    this._container.setAttribute("role", this._containerRole);
+    if (data.heightRows)
+      this._container.style.setProperty("--treeview-height-rows", String(data.heightRows));
+    if (this._isRealTree && (!data.headers || data.headers.length === 0))
+      window.L.DomUtil.addClass(this._container, "ui-treeview-tree");
+    if (this._toggleColumns.size) {
+      window.L.DomUtil.addClass(this._container, "ui-treeview-toggle-columns");
+      const tracks = [];
+      if (this._hasState)
+        tracks.push("auto");
+      if (this._hasExpanderColumn)
+        tracks.push("auto");
+      for (let index = 0; index < this._columns; index++)
+        tracks.push(this._toggleColumns.has(index) ? "min-content" : "auto");
+      this._container.style.gridTemplateColumns = tracks.join(" ");
+    }
+    this.preprocessColumnData(data.entries);
+    this.fillHeaders(data, data.headers, builder);
+    this.fillEntries(data, data.entries, builder, 1, this._tbody);
+    if (_TreeViewControl.hasSearchField(data)) {
+      this.showSearchBar(this._container);
+    }
+    return true;
+  }
+};
+_TreeViewControl.headerNameOwnedKeys = [
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "*"
+];
+let TreeViewControl = _TreeViewControl;
+JSDialog.treeView = function(parentContainer, data, builder) {
+  const entryTexts = {};
+  let hasRenderer = !!data.customEntryRenderer;
+  const collectEntryTexts = (entries) => {
+    for (const entry of entries || []) {
+      const columns = entry.columns || [];
+      if (columns.some((column) => column.customEntryRenderer))
+        hasRenderer = true;
+      entryTexts[entry.row] = columns.map((column) => column.text).concat(entry.text).join("	");
+      collectEntryTexts(entry.children);
+    }
+  };
+  collectEntryTexts(data.entries);
+  if (hasRenderer) {
+    if (!builder.rendersCache[data.id])
+      builder.rendersCache[data.id] = {
+        persistent: false,
+        images: [],
+        dpiScale: window.devicePixelRatio
+      };
+    const rendersCache = builder.rendersCache[data.id];
+    if (!rendersCache.persistent) {
+      const cachedTexts = rendersCache.entryTexts || {};
+      for (const row of Object.keys(rendersCache.images)) {
+        if (cachedTexts[row] !== entryTexts[row])
+          delete rendersCache.images[row];
+      }
+      rendersCache.entryTexts = entryTexts;
+    }
+  }
+  var treeView = new TreeViewControl(data, builder);
+  treeView.build(data, builder, parentContainer);
+  parentContainer.appendChild(treeView._container);
+  app.layoutingService.appendLayoutingTask(() => {
+    if (!treeView._gridMode)
+      return;
+    const selected = treeView._container.querySelector(".ui-treeview-entry.selected");
+    if (!selected)
+      return;
+    const parent = treeView._container.parentElement;
+    const persisted = parent && parent._chartDataActiveColumn;
+    if (typeof persisted === "number" && persisted >= 1)
+      treeView.setActiveColumn(persisted);
+    else if (treeView._activeColumn < 1)
+      treeView.setActiveColumn(1);
+    treeView.updateActiveCellMarker(selected, treeView._activeColumn);
+  });
+  const updateRenders = (pos) => {
+    const row = treeView.findEntryWithRow(data.entries, pos);
+    if (!row) {
+      console.error('treeview updateRenders: row "' + pos + '" not found');
+      return;
+    }
+    const originalRow = treeView._rows.get(String(pos));
+    if (!originalRow) {
+      console.error("treeview updateRenders: missing original row");
+      return;
+    }
+    const level = parseInt(originalRow.getAttribute("level"));
+    const dummyParent = document.createElement("div");
+    const newRow = treeView.fillEntry(data, row, builder, level, dummyParent);
+    if (originalRow.classList.contains("ui-treeview-expandable")) {
+      originalRow.nextSibling.replaceWith(newRow[1]);
+      originalRow.replaceWith(newRow[0]);
+    } else {
+      originalRow.replaceWith(newRow[0]);
+    }
+    treeView._rows.set(String(pos), newRow[0]);
+    app.console.debug("treeview: updated render for pos: " + pos);
+  };
+  treeView._container.updateRenders = updateRenders;
+  return false;
+};
+JSDialog.TreeViewHasSearchField = TreeViewControl.hasSearchField;
+JSDialog.isDnDActive = function() {
+  var dndElements = document.querySelectorAll(".droptarget");
+  return dndElements && dndElements.length;
+};

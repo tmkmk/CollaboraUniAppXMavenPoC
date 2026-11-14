@@ -1,0 +1,33 @@
+{
+  "id": "uni-collabora-editor",
+  "displayName": "Collabora Word 编辑器",
+  "version": "0.1.0",
+  "description": "通过 Maven 完整 Engine AAR 打开和编辑 DOC/DOCX",
+  "engines": {
+    "HBuilderX": ">=5.34.0",
+    "uni-app": ">=3.8",
+    "uni-app-x": ">=4.75"
+  },
+  "uni_modules": {
+    "dependencies": [],
+    "encrypt": [],
+    "platforms": {
+      "client": {
+        "uni-app": {
+          "app": {
+            "android": {
+              "minVersion": "26"
+            }
+          }
+        },
+        "uni-app-x": {
+          "app": {
+            "android": {
+              "minVersion": "26"
+            }
+          }
+        }
+      }
+    }
+  }
+}
