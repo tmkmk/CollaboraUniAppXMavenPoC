@@ -123,44 +123,92 @@ def main() -> None:
 '''
     activity = replace_once(activity, old_task, new_task, "UNO extraction task")
 
-    activity = replace_once(
-        activity,
-        '        String finalUrlToLoad = "file:///android_asset/dist/cool.html?file_path=" +\n',
-        '        String runtimePageUrl = COWebViewClient.getRuntimeAssetUrl("dist/cool.html");\n'
-        '        if (runtimePageUrl == null)\n'
-        '            runtimePageUrl = "file:///android_asset/dist/cool.html";\n'
-        '        String finalUrlToLoad = runtimePageUrl + "?file_path=" +\n',
-        "runtime Web entry URL",
-    )
+    previous_entry = '''        String runtimePageUrl = COWebViewClient.getRuntimeAssetUrl("dist/cool.html");
+        if (runtimePageUrl == null)
+            runtimePageUrl = "file:///android_asset/dist/cool.html";
+        String finalUrlToLoad = runtimePageUrl + "?file_path=" +
+'''
+    current_entry = '        String finalUrlToLoad = "file:///android_asset/dist/cool.html?file_path=" +\n'
+    if previous_entry in activity:
+        activity = replace_once(activity, previous_entry, current_entry, "runtime Web entry URL")
+    elif current_entry not in activity:
+        raise RuntimeError("Expected the runtime Web entry URL patch point")
 
-    method = '''    static String getRuntimeAssetUrl(String relativePath) {
+    client_imports = {
+        "import android.webkit.MimeTypeMap;": "import android.webkit.WebViewClient;\n",
+        "import java.io.File;": "import java.io.ByteArrayInputStream;\n",
+        "import java.io.FileInputStream;": "import java.io.File;\n",
+        "import java.io.IOException;": "import java.io.InputStream;\n",
+    }
+    for import_line, after_line in client_imports.items():
+        if import_line not in client:
+            client = replace_once(client, after_line, after_line + import_line + "\n", "runtime asset import")
+
+    if "private static volatile File runtimeAssetsDirectory;" not in client:
+        client = replace_once(
+            client,
+            "public class COWebViewClient extends WebViewClient {\n",
+            "public class COWebViewClient extends WebViewClient {\n"
+            "    private static volatile File runtimeAssetsDirectory;\n\n"
+            "    static void setRuntimeAssetsDirectory(File directory) {\n"
+            "        runtimeAssetsDirectory = directory;\n"
+            "    }\n\n",
+            "runtime asset directory",
+        )
+
+    if "openRuntimeAsset(uri.getPath())" not in client:
+        client = replace_once(
+            client,
+            "        Uri uri = request.getUrl();\n",
+            "        Uri uri = request.getUrl();\n"
+            '        if (Objects.equals(uri.getScheme(), "file") && uri.getPath() != null\n'
+            '                && uri.getPath().startsWith("/android_asset/")) {\n'
+            "            WebResourceResponse runtimeAsset = openRuntimeAsset(uri.getPath());\n"
+            "            if (runtimeAsset != null)\n"
+            "                return runtimeAsset;\n"
+            "        }\n\n",
+            "runtime asset request interception",
+        )
+
+    if "private WebResourceResponse openRuntimeAsset(String assetPath)" not in client:
+        client = replace_once(
+            client,
+            "    private WebResourceResponse handleMediaRequest(WebResourceRequest request) {\n",
+            '''    @Nullable
+    private WebResourceResponse openRuntimeAsset(String assetPath) {
         File root = runtimeAssetsDirectory;
         if (root == null)
             return null;
 
+        String relativePath = assetPath.substring("/android_asset/".length());
         try {
             File asset = new File(root, relativePath);
             String rootPath = root.getCanonicalPath() + File.separator;
-            String assetPath = asset.getCanonicalPath();
-            if (!assetPath.startsWith(rootPath) || !asset.isFile())
+            String assetCanonicalPath = asset.getCanonicalPath();
+            if (!assetCanonicalPath.startsWith(rootPath) || !asset.isFile())
                 return null;
-            return Uri.fromFile(asset).toString();
+
+            String extension = MimeTypeMap.getFileExtensionFromUrl(asset.getName()).toLowerCase(java.util.Locale.ROOT);
+            String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+            if (mimeType == null)
+                mimeType = "application/octet-stream";
+            String encoding = mimeType.startsWith("text/") || extension.equals("js") || extension.equals("json")
+                    || extension.equals("svg") ? "UTF-8" : null;
+            return new WebResourceResponse(mimeType, encoding, new FileInputStream(asset));
         } catch (IOException exception) {
             return null;
         }
     }
 
-'''
-    if "static String getRuntimeAssetUrl(String relativePath)" not in client:
-        client = replace_once(
-            client,
-            "    public COWebViewClient() {\n",
-            method + "    public COWebViewClient() {\n",
-            "runtime asset URL helper",
+    private WebResourceResponse handleMediaRequest(WebResourceRequest request) {
+''',
+            "runtime asset response",
         )
 
-    if "UNI_RUNTIME_ASSETS_EXTRACTED_V2" not in activity or "getRuntimeAssetUrl(\"dist/cool.html\")" not in activity:
+    if "UNI_RUNTIME_ASSETS_EXTRACTED_V2" not in activity or "file:///android_asset/dist/cool.html?file_path=" not in activity:
         raise RuntimeError("Runtime asset patch verification failed")
+    if "openRuntimeAsset(uri.getPath())" not in client or "private static volatile File runtimeAssetsDirectory;" not in client:
+        raise RuntimeError("Runtime Web asset interception patch verification failed")
     activity_path.write_text(activity, encoding="utf-8")
     client_path.write_text(client, encoding="utf-8")
     print("Patched runtime ZIP extraction and WebView entry URL")

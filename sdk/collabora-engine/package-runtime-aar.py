@@ -38,7 +38,7 @@ SAVE_FOR_EXIT = """        window.__uniCollaboraSaveForExit = () => {
 def main() -> None:
     repo = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="0.1.9")
+    parser.add_argument("--version", default="0.1.10")
     parser.add_argument("--base", type=Path, required=True, help="Previously built full AAR")
     parser.add_argument("--classes", type=Path, required=True, help="classes.jar from compileReleaseJavaWithJavac")
     args = parser.parse_args()
@@ -94,15 +94,18 @@ def main() -> None:
             if any(name == "org/libreoffice/androidlib/R.class" or name.startswith("org/libreoffice/androidlib/R$") for name in classes.namelist()):
                 raise RuntimeError("Packaged classes.jar still contains generated Android resource R classes")
             activity = classes.read("org/libreoffice/androidlib/LOActivity.class")
+            web_client = classes.read("org/libreoffice/androidlib/COWebViewClient.class")
             required_engine_markers = (
                 b"mountUniRuntimeAssets",
                 b"onUniEditorSaveResult",
                 b"extractUniRuntimeUnpack",
                 b"UNI_RUNTIME_ASSETS_EXTRACTED_V2",
-                b"getRuntimeAssetUrl",
+                b"file:///android_asset/dist/cool.html?file_path=",
             )
             if any(marker not in activity for marker in required_engine_markers):
                 raise RuntimeError("Compiled classes.jar is missing required runtime asset fixes")
+            if b"openRuntimeAsset" not in web_client or b"/android_asset/" not in web_client:
+                raise RuntimeError("Compiled classes.jar is missing runtime Web asset interception")
         metadata = artifact.read("META-INF/com/android/build/gradle/aar-metadata.properties").decode("utf-8")
         if "minCompileSdk=36" not in metadata:
             raise RuntimeError("Base AAR must remain compatible with Android 36")
