@@ -38,7 +38,7 @@ SAVE_FOR_EXIT = """        window.__uniCollaboraSaveForExit = () => {
 def main() -> None:
     repo = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="0.1.10")
+    parser.add_argument("--version", default="0.1.11")
     parser.add_argument("--base", type=Path, required=True, help="Previously built full AAR")
     parser.add_argument("--classes", type=Path, required=True, help="classes.jar from compileReleaseJavaWithJavac")
     args = parser.parse_args()
@@ -100,6 +100,7 @@ def main() -> None:
                 b"onUniEditorSaveResult",
                 b"extractUniRuntimeUnpack",
                 b"UNI_RUNTIME_ASSETS_EXTRACTED_V2",
+                b"Using runtime ZIP for native asset archive",
                 b"file:///android_asset/dist/cool.html?file_path=",
             )
             if any(marker not in activity for marker in required_engine_markers):

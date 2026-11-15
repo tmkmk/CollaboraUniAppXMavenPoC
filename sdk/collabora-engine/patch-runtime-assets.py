@@ -72,6 +72,26 @@ def main() -> None:
     if "private boolean extractUniRuntimeUnpack(File archive)" not in activity:
         activity = replace_once(activity, "    private void deleteUniRuntimeFiles(File file) {\n", helper + "    private void deleteUniRuntimeFiles(File file) {\n", "UNO extraction helper")
 
+    original_apk_path = '        String apkFile = getApplication().getPackageResourcePath();\n'
+    previous_runtime_archive = (
+        original_apk_path
+        + '        String runtimeArchivePath = getIntent().getStringExtra(UNI_RUNTIME_ASSET_PATH);\n'
+        + '        if (runtimeArchivePath != null && !runtimeArchivePath.isEmpty())\n'
+        + '            apkFile = runtimeArchivePath;\n'
+    )
+    current_runtime_archive = (
+        original_apk_path
+        + '        String runtimeArchivePath = getIntent().getStringExtra(UNI_RUNTIME_ASSET_PATH);\n'
+        + '        if (runtimeArchivePath != null && !runtimeArchivePath.isEmpty()) {\n'
+        + '            apkFile = runtimeArchivePath;\n'
+        + '            Log.i(TAG, "Using runtime ZIP for native asset archive");\n'
+        + '        }\n'
+    )
+    if previous_runtime_archive in activity:
+        activity = replace_once(activity, previous_runtime_archive, current_runtime_archive, "native COKit runtime asset archive")
+    elif current_runtime_archive not in activity:
+        activity = replace_once(activity, original_apk_path, current_runtime_archive, "native COKit runtime asset archive")
+
     old_task = '''        new AsyncTask<Void, Void, Void>() {
             @Override
             protected Void doInBackground(Void... voids) {
@@ -205,13 +225,18 @@ def main() -> None:
             "runtime asset response",
         )
 
-    if "UNI_RUNTIME_ASSETS_EXTRACTED_V2" not in activity or "file:///android_asset/dist/cool.html?file_path=" not in activity:
+    if (
+        "UNI_RUNTIME_ASSETS_EXTRACTED_V2" not in activity
+        or "file:///android_asset/dist/cool.html?file_path=" not in activity
+        or "apkFile = runtimeArchivePath;" not in activity
+        or "Using runtime ZIP for native asset archive" not in activity
+    ):
         raise RuntimeError("Runtime asset patch verification failed")
     if "openRuntimeAsset(uri.getPath())" not in client or "private static volatile File runtimeAssetsDirectory;" not in client:
         raise RuntimeError("Runtime Web asset interception patch verification failed")
     activity_path.write_text(activity, encoding="utf-8")
     client_path.write_text(client, encoding="utf-8")
-    print("Patched runtime ZIP extraction and WebView entry URL")
+    print("Patched runtime ZIP extraction, native asset archive, and WebView entry URL")
 
 
 if __name__ == "__main__":
