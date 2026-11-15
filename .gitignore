@@ -9,6 +9,7 @@ collabora-source/online/.git/
 sdk/central-release/*.zip
 sdk/central-release/staging/
 sdk/central-release/staging-*/
+/build/runtime-resources/
 sdk/collabora-api/bin/
 sdk/collabora-demo/bin/
 sdk/collabora-engine/*.orig

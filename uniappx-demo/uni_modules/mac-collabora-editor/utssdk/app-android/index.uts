@@ -1,0 +1,420 @@
+import Activity from 'android.app.Activity'
+import BroadcastReceiver from 'android.content.BroadcastReceiver'
+import Context from 'android.content.Context'
+import Intent from 'android.content.Intent'
+import IntentFilter from 'android.content.IntentFilter'
+import Uri from 'android.net.Uri'
+import Build from 'android.os.Build'
+import File from 'java.io.File'
+import FileInputStream from 'java.io.FileInputStream'
+import FileOutputStream from 'java.io.FileOutputStream'
+import ByteArrayOutputStream from 'java.io.ByteArrayOutputStream'
+import InputStream from 'java.io.InputStream'
+import ZipFile from 'java.util.zip.ZipFile'
+import ZipEntry from 'java.util.zip.ZipEntry'
+import MessageDigest from 'java.security.MessageDigest'
+import BigInteger from 'java.math.BigInteger'
+import JSONObject from 'org.json.JSONObject'
+import UUID from 'java.util.UUID'
+import System from 'java.lang.System'
+import UTSAndroid from 'io.dcloud.uts.UTSAndroid'
+import {
+  CollaboraEditorEvent,
+  CollaboraEditorEventCallback,
+  CollaboraOpenOptions,
+  UnoArguments
+} from '../interface.uts'
+
+const ACTION_COMMAND = 'io.github.tmkmk.collabora.EDITOR_COMMAND'
+const ACTION_EVENT = 'io.github.tmkmk.collabora.EDITOR_EVENT'
+const EXTRA_COMMAND_JSON = 'io.github.tmkmk.collabora.COMMAND_JSON'
+const EXTRA_EVENT_JSON = 'io.github.tmkmk.collabora.EVENT_JSON'
+const EXTRA_USER_NAME = 'io.github.tmkmk.collabora.USER_NAME'
+const EXTRA_OPEN_MODE = 'io.github.tmkmk.collabora.OPEN_MODE'
+const EXTRA_WEB_OPTIONS = 'io.github.tmkmk.collabora.WEB_OPTIONS'
+const EXTRA_ENABLE_TRACK_CHANGES = 'io.github.tmkmk.collabora.ENABLE_TRACK_CHANGES'
+const EXTRA_SOURCE_URI = 'io.github.tmkmk.collabora.SOURCE_URI'
+const EXTRA_RUNTIME_ASSET_PATH = 'io.github.tmkmk.collabora.RUNTIME_ASSET_PATH'
+const RUNTIME_VERSION = '0.1.4'
+const RUNTIME_ARCHIVE = 'collabora-engine-runtime-0.1.4-arm64-v8a.zip'
+const RUNTIME_ABI = 'jni/arm64-v8a/'
+
+const editorListeners = new Map<string, CollaboraEditorEventCallback>()
+let eventReceiver: BroadcastReceiver | null = null
+let editorOpen = false
+let runtimeInitialized = false
+let runtimeBaseUrl = ''
+let runtimeInitialization: Promise<void> | null = null
+let runtimeArchivePath = ''
+
+function copyStream(input: InputStream, output: FileOutputStream, digest: MessageDigest | null): void {
+  const buffer = new ByteArray(32768)
+  let length: Int = input.read(buffer)
+  while (length > 0) {
+    output.write(buffer, 0, length)
+    if (digest != null) digest.update(buffer, 0, length)
+    length = input.read(buffer)
+  }
+  output.flush()
+}
+
+function copyZipEntry(zip: ZipFile, entry: ZipEntry, target: File, expectedHash: string): void {
+  const parent = target.getParentFile()
+  if (parent == null || target.getCanonicalPath().indexOf(parent.getCanonicalPath() + File.separator) != 0) {
+    throw new Error('Runtime ZIP contains an invalid library path')
+  }
+  const part = new File(target.getParentFile(), target.getName() + '.part')
+  const digest = MessageDigest.getInstance('SHA-256')
+  const input = zip.getInputStream(entry)
+  const output = new FileOutputStream(part)
+  try {
+    copyStream(input, output, digest)
+  } finally {
+    input.close()
+    output.close()
+  }
+  const hex = new BigInteger(1, digest.digest()).toString(16)
+  const actualHash = '0000000000000000000000000000000000000000000000000000000000000000'.substring(hex.length) + hex
+  if (part.length() != entry.getSize() || actualHash != expectedHash) {
+    part.delete()
+    throw new Error('Runtime library checksum mismatch: ' + entry.getName())
+  }
+  if (target.exists()) target.delete()
+  if (!part.renameTo(target)) {
+    part.delete()
+    throw new Error('Unable to install runtime library: ' + target.getName())
+  }
+}
+
+function installRuntimeArchive(archive: File, runtimeDir: File): void {
+  if (!archive.isFile() || archive.length() <= 0 || archive.length() > 300000000) {
+    throw new Error('Collabora runtime ZIP is missing or has an invalid size')
+  }
+  const zip = new ZipFile(archive)
+  try {
+    const manifestEntry = zip.getEntry('runtime-manifest.json')
+    const webEntry = zip.getEntry('assets/dist/cool.html')
+    if (manifestEntry == null || webEntry == null) {
+      throw new Error('Runtime ZIP is missing its manifest or editor assets')
+    }
+    const manifestInput = zip.getInputStream(manifestEntry)
+    const manifestOutput = new ByteArrayOutputStream()
+    const manifestBuffer = new ByteArray(32768)
+    let manifestLength = manifestInput.read(manifestBuffer)
+    while (manifestLength > 0) {
+      manifestOutput.write(manifestBuffer, 0, manifestLength)
+      manifestLength = manifestInput.read(manifestBuffer)
+    }
+    manifestInput.close()
+    if (manifestOutput.size() <= 0 || manifestOutput.size() > 4000000) {
+      manifestOutput.close()
+      throw new Error('Runtime manifest is empty or too large')
+    }
+    const manifestText = manifestOutput.toString('UTF-8')
+    manifestOutput.close()
+    const manifest = new JSONObject(manifestText)
+    if (manifest.getString('engineVersion') != RUNTIME_VERSION || manifest.getString('abi') != 'arm64-v8a') {
+      throw new Error('Runtime ZIP version or ABI does not match this plugin')
+    }
+
+    const libDir = new File(runtimeDir, 'lib')
+    if (!libDir.exists() && !libDir.mkdirs()) throw new Error('Unable to create runtime library directory')
+    const files = manifest.getJSONArray('files')
+    let foundEngine = false
+  for (let index: Int = 0; index < files.length(); index++) {
+      const item = files.getJSONObject(index)
+      if (item.getString('kind') != 'native-library') continue
+      const path = item.getString('path')
+      if (!path.startsWith(RUNTIME_ABI)) throw new Error('Runtime ZIP contains an unexpected ABI')
+      const name = path.substring(RUNTIME_ABI.length)
+      if (!name.endsWith('.so') || name.indexOf('/') >= 0) throw new Error('Runtime ZIP contains an invalid library name')
+      const entry = zip.getEntry(path)
+      if (entry == null || entry.isDirectory) throw new Error('Runtime library is missing: ' + name)
+      const target = new File(libDir, name)
+      const marker = new File(libDir, name + '.verified')
+      const validCache = marker.isFile() && target.isFile() && target.length() == item.getLong('size')
+      if (!validCache) {
+        copyZipEntry(zip, entry, target, item.getString('sha256'))
+        marker.createNewFile()
+      }
+      if (name == 'liblo-native-code.so') foundEngine = true
+    }
+    if (!foundEngine) throw new Error('Runtime ZIP does not contain liblo-native-code.so')
+
+    // Keep the APK's libandroidapp.so and libc++_shared.so as core dependencies.
+    System.load(new File(libDir, 'liblo-native-code.so').getAbsolutePath())
+  } finally {
+    zip.close()
+  }
+}
+
+function downloadAndInstallRuntime(resourceBaseUrl: string, resolve: (value: void) => void, reject: (reason: any) => void): void {
+  const activity = UTSAndroid.getUniActivity()
+  if (activity == null) {
+    reject(new Error('Android Activity is not available'))
+    return
+  }
+  const base = resourceBaseUrl.trim().endsWith('/') ? resourceBaseUrl.trim() : resourceBaseUrl.trim() + '/'
+  const runtimeDir = new File(activity.getFilesDir(), 'collabora-runtime/' + RUNTIME_VERSION)
+  if (!runtimeDir.exists() && !runtimeDir.mkdirs()) {
+    reject(new Error('Unable to create Collabora runtime cache directory'))
+    return
+  }
+  const archive = new File(runtimeDir, RUNTIME_ARCHIVE)
+  const marker = new File(runtimeDir, 'installed.version')
+  const installCached = marker.isFile() && archive.isFile()
+  if (installCached) {
+    UTSAndroid.getDispatcher('io').async((_) => {
+      try {
+        installRuntimeArchive(archive, runtimeDir)
+        runtimeBaseUrl = base
+        runtimeArchivePath = archive.getAbsolutePath()
+        runtimeInitialized = true
+        resolve()
+      } catch (error) {
+        marker.delete()
+        archive.delete()
+        reject(error)
+      }
+    })
+    return
+  }
+  uni.downloadFile({
+    url: base + RUNTIME_ARCHIVE,
+    timeout: 300000,
+    success: (result) => {
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        reject(new Error('Runtime download failed: HTTP ' + result.statusCode))
+        return
+      }
+      UTSAndroid.getDispatcher('io').async((_) => {
+        try {
+          const source = new File(result.tempFilePath)
+          const part = new File(runtimeDir, RUNTIME_ARCHIVE + '.part')
+          const input = new FileInputStream(source)
+          const output = new FileOutputStream(part)
+          try { copyStream(input, output, null) } finally { input.close(); output.close() }
+          if (archive.exists()) archive.delete()
+          if (!part.renameTo(archive)) throw new Error('Unable to cache the downloaded runtime ZIP')
+          installRuntimeArchive(archive, runtimeDir)
+          marker.createNewFile()
+          runtimeBaseUrl = base
+          runtimeArchivePath = archive.getAbsolutePath()
+          runtimeInitialized = true
+          resolve()
+        } catch (error) {
+          reject(error)
+        }
+      })
+    },
+    fail: (error) => reject(new Error('Runtime download failed: ' + error.errMsg))
+  })
+}
+
+/** Download, validate, cache and load the ARM64 Engine runtime before opening a document. */
+export function initializeEngine(resourceBaseUrl: string): Promise<void> {
+  const base = resourceBaseUrl.trim()
+  if (!base.startsWith('https://')) throw new Error('resourceBaseUrl must use HTTPS')
+  if (runtimeInitialized) {
+    if (runtimeBaseUrl != '' && runtimeBaseUrl != (base.endsWith('/') ? base : base + '/')) {
+      throw new Error('Engine runtime is already initialized from a different URL')
+    }
+    return Promise.resolve()
+  }
+  const currentInitialization = runtimeInitialization
+  if (currentInitialization != null) return currentInitialization
+  runtimeBaseUrl = base.endsWith('/') ? base : base + '/'
+  const initializationPromise = new Promise<void>((resolve, reject) => {
+    downloadAndInstallRuntime(base, () => resolve(), (error: any) => {
+      runtimeInitialization = null
+      reject(error)
+    })
+  })
+  runtimeInitialization = initializationPromise
+  return initializationPromise
+}
+
+class EditorEventReceiver extends BroadcastReceiver {
+  constructor() {
+    super()
+  }
+
+  override onReceive(_context: Context, intent: Intent): void {
+    const eventJson = intent.getStringExtra(EXTRA_EVENT_JSON)
+    if (eventJson == null) return
+    let event: CollaboraEditorEvent
+    try {
+      event = JSON.parse(eventJson) as CollaboraEditorEvent
+    } catch (error) {
+      console.error('无法解析编辑器事件', error)
+      return
+    }
+    const type = event.getString('type') ?? ''
+    if (type == 'ready') editorOpen = true
+    if (type == 'returned' || type == 'closed') editorOpen = false
+    editorListeners.forEach((callback: CollaboraEditorEventCallback) => {
+      try {
+        callback(event)
+      } catch (error) {
+        console.error('编辑器事件回调执行失败', error)
+      }
+    })
+  }
+}
+
+function requireActivity(): Activity {
+  const activity = UTSAndroid.getUniActivity()
+  if (activity == null) {
+    throw new Error('当前没有可用的 Android Activity')
+  }
+  return activity
+}
+
+function ensureEventReceiver(context: Context): void {
+  if (eventReceiver != null) return
+
+  eventReceiver = new EditorEventReceiver()
+
+  const filter = new IntentFilter(ACTION_EVENT)
+  if (Build.VERSION.SDK_INT >= 33) {
+    context.registerReceiver(eventReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+  } else {
+    context.registerReceiver(eventReceiver, filter)
+  }
+}
+
+function sendCommandRequest(activity: Activity, request: UTSJSONObject): void {
+  if (!editorOpen) {
+    throw new Error('编辑器尚未就绪或已关闭，请在 ready 事件后调用')
+  }
+  const intent = new Intent(ACTION_COMMAND)
+  intent.setPackage(activity.getPackageName())
+  intent.putExtra(EXTRA_COMMAND_JSON, JSON.stringify(request))
+  activity.sendBroadcast(intent)
+}
+
+function newRequestId(): string {
+  return UUID.randomUUID().toString()
+}
+
+/** 打开本机可访问的 .doc 或 .docx 文件。 */
+export function openDocument(options: CollaboraOpenOptions): void {
+  if (!runtimeInitialized || runtimeArchivePath.length == 0) {
+    throw new Error('请先调用 initializeEngine(resourceBaseUrl) 并等待完成')
+  }
+  if (options.filePath.trim().length == 0) {
+    throw new Error('Word 文档地址不能为空')
+  }
+  const mode = options.mode ?? 'edit'
+  const userName = options.userName ?? ''
+  if (mode != 'edit' && mode != 'readonly' && mode != 'revision') {
+    throw new Error('mode 必须是 edit、readonly 或 revision')
+  }
+  if (mode == 'revision' && options.enableTrackChanges == false) {
+    throw new Error('revision 模式不能关闭修订跟踪')
+  }
+  if (mode == 'revision' && userName.trim().length == 0) {
+    throw new Error('修订作者姓名不能为空')
+  }
+
+  const activity = requireActivity()
+  const absolutePath = options.filePath.startsWith('file://')
+    ? Uri.parse(options.filePath).getPath() ?? ''
+    : options.filePath.startsWith('/')
+      ? options.filePath
+      : UTSAndroid.convert2AbsFullPath(options.filePath)
+  const file = new File(absolutePath)
+  if (!file.exists() || !file.isFile() || !file.canRead()) {
+    throw new Error('Word 文档不存在或不可读：' + absolutePath)
+  }
+  if (mode != 'readonly' && !file.canWrite()) {
+    throw new Error('Word 文档不可写，无法保存编辑结果：' + absolutePath)
+  }
+  const extension = file.getName().substring(file.getName().lastIndexOf('.') + 1).toLowerCase()
+  let mimeType = ''
+  if (extension == 'doc') mimeType = 'application/msword'
+  else if (extension == 'docx') mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  else throw new Error('仅支持 .doc 和 .docx 文件')
+
+  ensureEventReceiver(activity.getApplicationContext())
+  editorOpen = false
+  const intent = new Intent()
+  intent.setClassName(activity, 'org.libreoffice.androidlib.LOActivity')
+  const sourceUri = options.sourceUri ?? ''
+  if (sourceUri.length > 0) {
+    const uri = Uri.parse(sourceUri)
+    if (uri.getScheme() != 'content') {
+      throw new Error('sourceUri 必须是系统文件选择器返回的 content:// URI')
+    }
+    intent.setDataAndType(uri, mimeType)
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    intent.putExtra(EXTRA_SOURCE_URI, sourceUri)
+  } else {
+    intent.setDataAndType(Uri.fromFile(file), mimeType)
+  }
+  intent.putExtra(EXTRA_USER_NAME, userName)
+  intent.putExtra(EXTRA_OPEN_MODE, mode)
+  intent.putExtra(EXTRA_WEB_OPTIONS, options.webOptions == null ? '{}' : JSON.stringify(options.webOptions))
+  intent.putExtra(EXTRA_ENABLE_TRACK_CHANGES, mode == 'revision' || options.enableTrackChanges == true)
+  intent.putExtra(EXTRA_RUNTIME_ASSET_PATH, runtimeArchivePath)
+  activity.startActivity(intent)
+}
+
+/** 发送 Writer UNO 命令，返回请求 ID；命令是否成功由具体命令决定。 */
+export function executeUnoCommand(command: string, args?: UnoArguments, force?: boolean): string {
+  if (!command.startsWith('.uno:') || command.length <= 5) {
+    throw new Error('command 必须是有效的 .uno: 命令')
+  }
+  const requestId = newRequestId()
+  sendCommandRequest(requireActivity(), {
+    action: 'command',
+    requestId: requestId,
+    command: command,
+    args: args ?? {},
+    force: force == true
+  })
+  return requestId
+}
+
+/** 在当前光标位置插入文本。 */
+export function insertText(text: string): string {
+  return executeUnoCommand('.uno:InsertText', {
+    Text: { type: 'string', value: text }
+  }, false)
+}
+
+/** 将文档中所有匹配文本替换为新文本。 */
+export function replaceText(searchText: string, replaceText: string): string {
+  if (searchText.length == 0) throw new Error('searchText 不能为空')
+  return executeUnoCommand('.uno:ReplaceAll', {
+    SearchString: { type: 'string', value: searchText },
+    ReplaceString: { type: 'string', value: replaceText }
+  }, false)
+}
+
+/** 保存当前文档；保存完成后触发 saveCompleted 事件。 */
+export function saveDocument(): string {
+  const requestId = newRequestId()
+  sendCommandRequest(requireActivity(), { action: 'save', requestId: requestId })
+  return requestId
+}
+
+/** 保存并关闭当前编辑器；保存成功后关闭。 */
+export function closeDocument(): string {
+  const requestId = newRequestId()
+  sendCommandRequest(requireActivity(), { action: 'close', requestId: requestId, saveChanges: true })
+  return requestId
+}
+
+/** 订阅编辑器状态事件，返回可用于 offEditorEvent 的监听器 ID。 */
+export function onEditorEvent(callback: CollaboraEditorEventCallback): string {
+  ensureEventReceiver(requireActivity().getApplicationContext())
+  const listenerId = newRequestId()
+  editorListeners.set(listenerId, callback)
+  return listenerId
+}
+
+/** 取消事件订阅。 */
+export function offEditorEvent(listenerId: string): void {
+  editorListeners.delete(listenerId)
+}

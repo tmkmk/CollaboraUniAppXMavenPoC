@@ -7,16 +7,16 @@
 - 文件格式：`.doc`、`.docx`
 - Android 最低版本：API 26
 - 当前 Engine ABI：`arm64-v8a`
-- Engine Maven 坐标：`io.github.tmkmk.collabora:collabora-engine:0.1.4`
-- API 源码：`uni_modules/uni-collabora-editor/utssdk/app-android/index.uts`
+- Engine Maven 坐标：`io.github.tmkmk.collabora:collabora-engine:0.1.6`
+- API 源码：`uni_modules/mac-collabora-editor/utssdk/app-android/index.uts`
 
 页面日常需要调整的文件地址、作者姓名、打开模式、命令及命令参数都由函数参数传入。通用 `.uno:` 命令入口可复用 Engine 已支持的 Writer 命令，通常无需为增加一个页面操作而修改 AAR。
 
-插件采用 UTS 优先的封装：`index.uts` 直接引用 Android/Java API，负责打开文件、调用参数校验、事件订阅和 UNO 命令封装；插件没有额外的 Kotlin/Java 帮助类。Engine AAR 仍必须保留 Collabora 的 `LOActivity`、WebView/Socket 消息桥、JNI 和原生 `.so`，因为这些是编辑器运行时，不是 uni-app 业务适配层。仅增加 UTS API、默认值和参数封装时，不需要发布新的 Maven AAR；若变更 AAR 内的消息桥、Activity/Manifest、JNI 或原生依赖，则需要新 Maven 版本，并让应用构建时解析新版本。
+插件采用 UTS 优先的封装：`index.uts` 直接引用 Android/Java API，负责运行资源初始化、打开文件、参数校验、事件订阅和 UNO 命令封装。大型 Writer Web assets 和 13 个 Engine/NSS `.so` 从 Vue 传入的 HTTPS 前缀动态下载；轻量 AAR 保留 `LOActivity`、WebView/Socket 消息桥、布局与核心 JNI。修改 UTS API 通常不需要发布新的 Engine Maven；修改保存桥、Activity/Manifest、JNI 或 AAR 依赖需要新的 AAR 版本及相应自定义基座。
 
 ## 2. 安装与导入
 
-将 `uni-collabora-editor` 放入项目的 `uni_modules`，在 Vue/UVue 页面导入：
+将 `mac-collabora-editor` 放入项目的 `uni_modules`，在 Vue/UVue 页面导入：
 
 ```ts
 import {
@@ -28,8 +28,18 @@ import {
   closeDocument,
   onEditorEvent,
   offEditorEvent
-} from '@/uni_modules/uni-collabora-editor'
+} from '@/uni_modules/mac-collabora-editor'
 ```
+
+打开文档前先初始化运行资源。Vue 页面传入服务器前缀，插件不硬编码域名：
+
+```ts
+import { initializeEngine } from '@/uni_modules/mac-collabora-editor'
+
+await initializeEngine('https://example.com/appsource/')
+```
+
+首次调用下载 `collabora-engine-runtime-0.1.4-arm64-v8a.zip` 并缓存到 App 私有目录；后续调用复用缓存。首次 ZIP 约 147 MiB，解压资源约 447 MiB。
 
 Android 构建通过插件 `utssdk/app-android/config.json` 中的 Maven 坐标解析 Engine，并显式声明 `androidx.appcompat:appcompat:1.7.1`，供插件 Manifest 中的 AppCompat Activity 主题在 UTS Library 资源校验阶段解析。Engine POM 也声明了 AppCompat 及 Material/ConstraintLayout 依赖。请使用包含插件与该 Engine 版本的自定义基座进行本地运行或打包。
 
@@ -52,6 +62,7 @@ openDocument({
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `filePath` | `string` | 是 | — | `uni.downloadFile` 返回的 `tempFilePath`，或当前应用有权访问的 Android 绝对文件路径。支持 `.doc`、`.docx`。 |
+| `sourceUri` | `string` | 否 | — | 文件选择器返回的原始 `content://` URI。保存成功后插件将 Engine 临时文件写回 URI，并验证字节数与 SHA-256。 |
 | `userName` | `string` | 否 | 引擎默认用户名 | 编辑器用户名。`revision` 模式必须非空，并用作新修订作者。 |
 | `mode` | `'edit' \| 'readonly' \| 'revision'` | 否 | `'edit'` | 编辑、只读或修订模式。 |
 | `enableTrackChanges` | `boolean` | 否 | `false` | 在 `edit` 模式下请求启用修订跟踪；`revision` 模式总是请求启用。不能在 `revision` 模式传 `false`。 |
@@ -61,7 +72,7 @@ openDocument({
 
 - 推荐使用 `uni.downloadFile` 下载到应用可读写的临时目录，再把 `tempFilePath` 传给 `openDocument`。
 - 以 `/` 开头的路径按 Android 绝对路径使用；其他路径由 `UTSAndroid.convert2AbsFullPath` 转成应用绝对路径。
-- 文件必须真实存在且可读；编辑/修订模式还要求可写。`content://` URI、其他应用私有目录、未获授权的共享存储路径不属于本接口的文件路径格式。
+- 文件必须真实存在且可读；编辑/修订模式还要求可写。`content://` 作为 `sourceUri` 传入，并为 `filePath` 提供同一文档的本地可读副本。
 - 保存写回传入的文件。若临时文件需要长期保留，请在页面侧按业务需要复制到持久目录。
 
 ### 模式说明
@@ -175,8 +186,9 @@ openDocument({ filePath: downloaded.tempFilePath, mode: 'edit', userName: '张�
 | --- | --- | --- |
 | `ready` | — | Web 编辑器已初始化，可以发送命令。 |
 | `commandDispatched` | `requestId`, `command` | 通用 UNO 命令已交给编辑器分发；不是执行成功确认。 |
-| `saveCompleted` | `requestId`, `success`, `result`, `errorMsg` | 保存命令结果。`closeDocument()` 成功保存后也会收到此事件。 |
+| `saveCompleted` | `requestId`, `success`, `result`, `errorMsg` | Engine 保存与原 SAF URI 回写结果。`success=true` 表示写回校验通过；`closeDocument()` 成功后也会收到此事件。 |
 | `modifiedStatus` | `modified` | Engine 报告文档是否处于修改状态。 |
+| `returned` | — | 编辑器已回到 Vue 页面，Activity 与当前文档的编辑器实例保留。 |
 | `closed` | — | 编辑器 Activity 已关闭。 |
 
 ## 6. 可直接复制的下载、编辑、保存示例
@@ -188,7 +200,7 @@ import {
   saveDocument,
   onEditorEvent,
   offEditorEvent
-} from '@/uni_modules/uni-collabora-editor'
+} from '@/uni_modules/mac-collabora-editor'
 
 function downloadAndEdit() {
   uni.downloadFile({

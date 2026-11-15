@@ -1,0 +1,37 @@
+﻿{
+    "id":  "mac-collabora-editor",
+    "displayName":  "Collabora Word 编辑器",
+    "version":  "0.1.0",
+    "description":  "动态下载 Collabora Engine 运行资源并编辑 DOC/DOCX",
+    "engines":  {
+                    "HBuilderX":  "\u003e=5.34.0",
+                    "uni-app":  "\u003e=3.8",
+                    "uni-app-x":  "\u003e=4.75"
+                },
+    "uni_modules":  {
+                        "dependencies":  [
+
+                                         ],
+                        "encrypt":  [
+
+                                    ],
+                        "platforms":  {
+                                          "client":  {
+                                                         "uni-app":  {
+                                                                         "app":  {
+                                                                                     "android":  {
+                                                                                                     "minVersion":  "26"
+                                                                                                 }
+                                                                                 }
+                                                                     },
+                                                         "uni-app-x":  {
+                                                                           "app":  {
+                                                                                       "android":  {
+                                                                                                       "minVersion":  "26"
+                                                                                                   }
+                                                                                   }
+                                                                       }
+                                                     }
+                                      }
+                    }
+}

@@ -1,12 +1,27 @@
 <script setup lang="uts">
-import { openDocument } from '@/uni_modules/uni-collabora-editor'
+import { initializeEngine, openDocument } from '@/uni_modules/mac-collabora-editor'
 
 // const filePath = ref('/sdcard/Android/data/io.github.tmkmk.collabora.poc/files/a.docx')
 const filePath = ref('https://gjy.gzjtjt.cn/1.docx')
 const userName = ref('张三')
 const mode = ref('revision')
+const runtimeResourceBaseUrl = ref('https://gjy.gzjtjt.cn/appsource/')
+const runtimeReady = ref(false)
+const runtimeLoading = ref(false)
 
-function openWordDocument() {
+async function openWordDocument() {
+  try {
+    if (!runtimeReady.value) {
+      runtimeLoading.value = true
+      await initializeEngine(runtimeResourceBaseUrl.value)
+      runtimeReady.value = true
+    }
+  } catch (error) {
+    uni.showToast({ title: '初始化编辑器失败：' + String(error), icon: 'none' })
+    runtimeLoading.value = false
+    return
+  }
+  runtimeLoading.value = false
   const path = filePath.value.trim()
   if (path.startsWith('https://') || path.startsWith('http://')) {
     uni.downloadFile({
@@ -45,9 +60,10 @@ function openLocalDocument(path: string) {
     <text class="title">Collabora Word 编辑器 PoC</text>
     <text class="description">支持 HTTP(S) 下载地址、uni.downloadFile 返回的 tempFilePath，或当前 App 有权限访问的绝对路径。</text>
     <input v-model="filePath" placeholder="Word 下载地址或本地路径" />
+    <input v-model="runtimeResourceBaseUrl" placeholder="Engine 运行资源 URL 前缀" />
     <input v-model="userName" placeholder="修订作者姓名" />
     <input v-model="mode" placeholder="edit / readonly / revision" />
-    <button type="primary" @click="openWordDocument">打开 Word 文档</button>
+    <button type="primary" :disabled="runtimeLoading" @click="openWordDocument">{{ runtimeLoading ? '正在初始化编辑器…' : '打开 Word 文档' }}</button>
   </view>
 </template>
 

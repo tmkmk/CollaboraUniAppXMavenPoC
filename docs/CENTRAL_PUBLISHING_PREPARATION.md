@@ -1,4 +1,12 @@
 # Maven Central 与自定义基座状态（2026-11-13）
+## 0.1.6 发布记录（2026-11-15）
+
+- Maven 坐标：`io.github.tmkmk.collabora:collabora-engine:0.1.6`。
+- Sonatype 部署已返回 `PUBLISHED`；公共 POM、AAR 和 AAR 签名 URL 均返回 HTTP 200。
+- AAR 大小 5,298,138 bytes，SHA-256：`0ad13f42cab1f95d90e0fa6d544b13656daba8208771d4e73402ef4fce8dcbc7`；与 Central 下载文件一致。
+- 修复 `LOActivity` 只将普通 ZIP 挂载到 AssetManager、WebView 无法从 `file:///android_asset/` 读取运行时网页资源的问题：Java 层将 ZIP 内 `assets/` 安全解压到应用私有目录，WebView 请求从该目录读取，并保留内置资源回退。
+- 隔离 Android 测试壳已用 0.1.6 AAR、线上运行时 ZIP 和真实 DOCX 完成打开及页面渲染验证。uni-app 当前基座仍为 0.1.5，需重新构建含 0.1.6 的自定义基座后做实际 uni-app 验收。
+
 ## 最新发布状态（2026-11-14）
 
 - `io.github.tmkmk.collabora:collabora-engine:0.1.4` 已在 Maven Central 发布，Sonatype 部署 ID：`cd9d80fa-9b0b-41c2-a8e6-92145f8b6b03`，状态 `PUBLISHED`。

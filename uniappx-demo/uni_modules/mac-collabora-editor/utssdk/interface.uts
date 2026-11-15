@@ -2,10 +2,17 @@ export type CollaboraOpenMode = 'edit' | 'readonly' | 'revision'
 
 export type CollaboraOpenOptions = {
   filePath: string
+  /** Original SAF content:// URI; the plugin writes the saved cache file back to this URI. */
+  sourceUri?: string
   userName?: string
   mode?: CollaboraOpenMode
   webOptions?: UTSJSONObject
   enableTrackChanges?: boolean
+}
+
+/** HTTPS directory prefix containing the published runtime ZIP. */
+export type CollaboraRuntimeOptions = {
+  resourceBaseUrl: string
 }
 
 export type UnoValue = {
