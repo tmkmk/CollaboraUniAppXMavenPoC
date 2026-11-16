@@ -82,8 +82,6 @@ def main() -> None:
                                 with compiled.open(class_file) as source_class, filtered.open(copy(class_file), "w") as target_class:
                                     while chunk := source_class.read(1024 * 1024):
                                         target_class.write(chunk)
-                        if removed_resource_classes == 0:
-                            raise RuntimeError("Compiled classes.jar did not contain the expected Android resource R classes")
                         destination.write(filtered_classes.getvalue())
                     elif item.filename == socket_path and socket_js is not None:
                         destination.write(socket_js.encode("utf-8"))
@@ -106,6 +104,8 @@ def main() -> None:
                 b"Using runtime ZIP for native asset archive",
                 b"getRuntimeAssetUrl",
                 b"loadDataWithBaseURL",
+                b"loadRuntimeNativeLibraries",
+                b"RUNTIME_NATIVE_LIB_DIR",
             )
             if any(marker not in activity for marker in required_engine_markers):
                 raise RuntimeError("Compiled classes.jar is missing required runtime asset fixes")

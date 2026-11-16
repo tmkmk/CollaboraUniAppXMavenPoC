@@ -117,6 +117,13 @@ def main() -> None:
             '    private static final String UNI_RUNTIME_ASSET_PATH = "io.github.tmkmk.collabora.RUNTIME_ASSET_PATH";\n'
             '    private static final String UNI_RUNTIME_ASSETS_EXTRACTED = "UNI_RUNTIME_ASSETS_EXTRACTED";\n',
         )
+    if "UNI_RUNTIME_NATIVE_LIB_DIR" not in activity.read_text(encoding="utf-8"):
+        replace_once(
+            activity,
+            '    private static final String UNI_RUNTIME_ASSET_PATH = "io.github.tmkmk.collabora.RUNTIME_ASSET_PATH";\n',
+            '    private static final String UNI_RUNTIME_ASSET_PATH = "io.github.tmkmk.collabora.RUNTIME_ASSET_PATH";\n'
+            '    private static final String UNI_RUNTIME_NATIVE_LIB_DIR = "io.github.tmkmk.collabora.RUNTIME_NATIVE_LIB_DIR";\n',
+        )
     replace_once(
         activity,
         '    private void init() {\n'
@@ -186,6 +193,60 @@ def main() -> None:
 ''',
         )
 
+    if "private void loadRuntimeNativeLibraries()" not in activity.read_text(encoding="utf-8"):
+        replace_once(
+            activity,
+            '    static {\n        System.loadLibrary("androidapp");\n    }\n',
+            '''    private static boolean runtimeNativeLibrariesLoaded = false;
+
+    private void loadRuntimeNativeLibraries() {
+        if (runtimeNativeLibrariesLoaded)
+            return;
+
+        String runtimeLibraryDirectory = getIntent().getStringExtra(UNI_RUNTIME_NATIVE_LIB_DIR);
+        if (runtimeLibraryDirectory == null || runtimeLibraryDirectory.isEmpty()) {
+            System.loadLibrary("androidapp");
+            runtimeNativeLibrariesLoaded = true;
+            return;
+        }
+
+        try {
+            File libraryDirectory = new File(runtimeLibraryDirectory);
+            String appFilesPath = getFilesDir().getCanonicalPath() + File.separator;
+            String libraryPath = libraryDirectory.getCanonicalPath();
+            if (!libraryPath.startsWith(appFilesPath))
+                throw new IllegalStateException("Collabora native libraries must be inside app storage");
+
+            System.loadLibrary("c++_shared");
+            String[] libraries = {
+                "libnspr4.so", "libplc4.so", "libplds4.so", "libnssutil3.so",
+                "libfreebl3.so", "libsqlite3.so", "libnss3.so", "libnssckbi.so",
+                "libnssdbm3.so", "libsoftokn3.so", "libsmime3.so", "libssl3.so",
+                "liblo-native-code.so"
+            };
+            for (String libraryName : libraries) {
+                File library = new File(libraryDirectory, libraryName);
+                if (!library.isFile() || library.canWrite())
+                    throw new IllegalStateException("Collabora runtime library is missing or writable: " + library);
+                System.load(library.getAbsolutePath());
+                Log.i(TAG, "Loaded runtime library " + libraryName + " in editor process");
+            }
+            System.loadLibrary("androidapp");
+            runtimeNativeLibrariesLoaded = true;
+        } catch (Exception | UnsatisfiedLinkError exception) {
+            throw new IllegalStateException("Unable to load Collabora native libraries in editor process", exception);
+        }
+    }
+''',
+        )
+
+    replace_once(
+        activity,
+        '        createCOOLWSD(dataDir, cacheDir, apkFile, assetManager, urlToLoad, uiMode, userName);\n',
+        '        loadRuntimeNativeLibraries();\n'
+        '        createCOOLWSD(dataDir, cacheDir, apkFile, assetManager, urlToLoad, uiMode, userName);\n',
+    )
+
     # Reuse the retained editor instance when Vue opens the same source document again.
     replace_once(
         activity,
@@ -209,6 +270,15 @@ def main() -> None:
         '            onUniEditorEvent("{\\"type\\":\\"ready\\"}");\n'
         '            return;\n'
         '        }\n\n',
+    )
+
+    replace_once(
+        activity,
+        '    protected void onDestroy() {\n',
+        '    protected void onDestroy() {\n'
+        '        Log.w(TAG, "onDestroy retained=" + uniActivityRetained\n'
+        '                + " finishing=" + isFinishing()\n'
+        '                + " changingConfigurations=" + isChangingConfigurations());\n',
     )
 
     if "private boolean copyTempBackToIntent()" not in activity.read_text(encoding="utf-8"):
@@ -311,13 +381,15 @@ def main() -> None:
             uniActivityRetained = true;
             onUniEditorEvent("{\\"type\\":\\"returned\\"}");
         }
-        Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-        if (launchIntent == null) {
-            moveTaskToBack(true);
-            return;
+        Intent hostIntent = new Intent();
+        hostIntent.setClassName(getPackageName(), "io.dcloud.PandoraEntryActivity");
+        hostIntent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        Log.i(TAG, "Returning directly to the existing UniApp activity");
+        try {
+            startActivity(hostIntent);
+        } catch (ActivityNotFoundException exception) {
+            Log.e(TAG, "Unable to return to UniApp; keeping the editor activity alive", exception);
         }
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        startActivity(launchIntent);
     }
 
 ''',

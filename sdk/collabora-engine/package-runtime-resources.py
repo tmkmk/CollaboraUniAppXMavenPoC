@@ -34,9 +34,24 @@ NEW_SAVE_HANDLER = """            if (event.msgId === 'Action_Save_Resp') {
 DISPATCH_MARKER = "        window.__uniCollaboraDispatch = (requestJson) => {\n"
 SAVE_FOR_EXIT = """        window.__uniCollaboraSaveForExit = () => {
             const requestId = 'native-back-' + Date.now().toString();
+            if (documentModified === false) {
+                const handler = window.COOLMessageHandler;
+                if (handler && handler.onUniEditorSaveResult) {
+                    handler.onUniEditorSaveResult(requestId, true, 'unmodified', '', true);
+                    return;
+                }
+            }
             pendingSaves.push({ requestId: requestId, closeAfterSave: true });
             this._map.save(false, false);
         };
+"""
+MODIFIED_TRACKING = """        const pendingSaves = [];
+        let documentModified = null;
+"""
+MODIFIED_STATUS_HANDLER = """            if (event.msgId === 'Doc_ModifiedStatus') {
+                documentModified = event.args.Modified === true;
+                emit({ type: 'modifiedStatus', modified: documentModified });
+            }
 """
 CLOSEAPP_MARKER = """                if (window.codaRemotePage)
                     postUICloseToIntegrator();
@@ -206,6 +221,10 @@ def main() -> None:
         alert_dialog_path = "assets/dist/src/control/Control.AlertDialog.js"
         alert_dialog_js = source.read(alert_dialog_path).decode("utf-8") if alert_dialog_path in source.namelist() else None
         if socket_js is not None:
+            if "let documentModified = null;" not in socket_js:
+                if socket_js.count("        const pendingSaves = [];\n") != 1:
+                    raise RuntimeError("Could not find the Collabora modified-state insertion point")
+                socket_js = socket_js.replace("        const pendingSaves = [];\n", MODIFIED_TRACKING, 1)
             if OLD_SAVE_HANDLER in socket_js:
                 socket_js = socket_js.replace(OLD_SAVE_HANDLER, NEW_SAVE_HANDLER, 1)
             elif "handler.onUniEditorSaveResult" not in socket_js:
@@ -214,6 +233,11 @@ def main() -> None:
                 if socket_js.count(DISPATCH_MARKER) != 1:
                     raise RuntimeError("Could not find the compiled save dispatch insertion point")
                 socket_js = socket_js.replace(DISPATCH_MARKER, SAVE_FOR_EXIT + DISPATCH_MARKER, 1)
+            old_modified_status_handler = "            if (event.msgId === 'Doc_ModifiedStatus')\n                emit({ type: 'modifiedStatus', modified: event.args.Modified });\n"
+            if old_modified_status_handler in socket_js:
+                socket_js = socket_js.replace(old_modified_status_handler, MODIFIED_STATUS_HANDLER, 1)
+            elif "documentModified = event.args.Modified === true;" not in socket_js:
+                raise RuntimeError("Could not find the Collabora modified-status handler")
             socket_js = socket_js.replace("this._map.sendUnoCommand('.uno:Save');", "this._map.save(false, false);")
             if "this._map.sendUnoCommand('.uno:Save')" in socket_js:
                 raise RuntimeError("Save bridge still sends the forbidden .uno:Save command")
