@@ -48,7 +48,7 @@ CLOSEAPP_PATCH = """                if (window.codaRemotePage)
                     window.COOLMessageHandler.closeUniDocument();
                     return;
                 }
-                window.postMobileMessage('BYE');
+                window.console.error('Collabora UniApp close bridge is unavailable; keeping the editor engine alive.');
 """
 MOBILE_BACK_MARKER = """    enterReadonlyOrClose() {
         if (this.map.isEditMode()) {
@@ -61,7 +61,33 @@ MOBILE_BACK_PATCH = """    enterReadonlyOrClose() {
                 window.COOLMessageHandler.closeUniDocument();
                 return;
             }
+            if (window.ThisIsAMobileApp && !window.ThisIsTheEmscriptenApp) {
+                window.console.error('Collabora UniApp close bridge is unavailable; keeping the editor engine alive.');
+                return;
+            }
             this.map.setPermission('readonly');
+"""
+OLD_PASSWORD_GIVEUP = """            else if (window.ThisIsAMobileApp && !window.ThisIsTheEmscriptenApp) {
+                window.postMobileMessage('BYE');
+            }
+"""
+NEW_PASSWORD_GIVEUP = """            else if (window.ThisIsAMobileApp && !window.ThisIsTheEmscriptenApp) {
+                const handler = window.COOLMessageHandler;
+                if (handler && handler.closeUniDocument)
+                    handler.closeUniDocument();
+                else
+                    window.console.error('Collabora UniApp close bridge is unavailable; keeping the editor engine alive.');
+            }
+"""
+OLD_FATAL_CLOSE = """                    window.postMobileMessage('BYE');
+                    this._map.uiManager.closeAll();
+"""
+NEW_FATAL_CLOSE = """                    const handler = window.COOLMessageHandler;
+                    if (handler && handler.closeUniDocument)
+                        handler.closeUniDocument();
+                    else
+                        window.console.error('Collabora UniApp close bridge is unavailable; keeping the editor engine alive.');
+                    this._map.uiManager.closeAll();
 """
 OLD_BROWSER_SETTING_HANDLER = "if (event.data.startsWith('browsersetting:')) {"
 NEW_BROWSER_SETTING_HANDLER = "if (typeof event.data === 'string' && event.data.startsWith('browsersetting:')) {"
@@ -177,6 +203,8 @@ def main() -> None:
         dispatcher_js = source.read(dispatcher_path).decode("utf-8") if dispatcher_path in source.namelist() else None
         ui_manager_path = "assets/dist/src/control/Control.UIManager.js"
         ui_manager_js = source.read(ui_manager_path).decode("utf-8") if ui_manager_path in source.namelist() else None
+        alert_dialog_path = "assets/dist/src/control/Control.AlertDialog.js"
+        alert_dialog_js = source.read(alert_dialog_path).decode("utf-8") if alert_dialog_path in source.namelist() else None
         if socket_js is not None:
             if OLD_SAVE_HANDLER in socket_js:
                 socket_js = socket_js.replace(OLD_SAVE_HANDLER, NEW_SAVE_HANDLER, 1)
@@ -199,6 +227,16 @@ def main() -> None:
                 ui_manager_js = ui_manager_js.replace(MOBILE_BACK_MARKER, MOBILE_BACK_PATCH, 1)
             elif MOBILE_BACK_PATCH not in ui_manager_js:
                 raise RuntimeError("Could not find the mobile back handler insertion point")
+        if socket_js is not None:
+            if OLD_PASSWORD_GIVEUP in socket_js:
+                socket_js = socket_js.replace(OLD_PASSWORD_GIVEUP, NEW_PASSWORD_GIVEUP, 1)
+            elif NEW_PASSWORD_GIVEUP not in socket_js:
+                raise RuntimeError("Could not find the mobile password-dismiss handler")
+        if alert_dialog_js is not None:
+            if OLD_FATAL_CLOSE in alert_dialog_js:
+                alert_dialog_js = alert_dialog_js.replace(OLD_FATAL_CLOSE, NEW_FATAL_CLOSE, 1)
+            elif NEW_FATAL_CLOSE not in alert_dialog_js:
+                raise RuntimeError("Could not find the mobile fatal-dialog close handler")
 
         asset_replacements = prepare_webview_assets(source, args.node, args.esbuild_module)
         if socket_js is not None:
@@ -207,6 +245,8 @@ def main() -> None:
             asset_replacements[dispatcher_path] = dispatcher_js.encode("utf-8")
         if ui_manager_js is not None:
             asset_replacements[ui_manager_path] = ui_manager_js.encode("utf-8")
+        if alert_dialog_js is not None:
+            asset_replacements[alert_dialog_path] = alert_dialog_js.encode("utf-8")
 
         for item in source.infolist():
             is_asset = item.filename.startswith("assets/") and not item.is_dir()
