@@ -30,7 +30,7 @@ DISPATCH_MARKER = "        window.__uniCollaboraDispatch = (requestJson) => {\n"
 SAVE_FOR_EXIT = """        window.__uniCollaboraSaveForExit = () => {
             const requestId = 'native-back-' + Date.now().toString();
             pendingSaves.push({ requestId: requestId, closeAfterSave: true });
-            this._map.sendUnoCommand('.uno:Save');
+            this._map.save(false, false);
         };
 """
 
@@ -62,6 +62,9 @@ def main() -> None:
                 if socket_js.count(DISPATCH_MARKER) != 1:
                     raise RuntimeError("Could not find the compiled dispatch bridge insertion point")
                 socket_js = socket_js.replace(DISPATCH_MARKER, SAVE_FOR_EXIT + DISPATCH_MARKER, 1)
+            socket_js = socket_js.replace("this._map.sendUnoCommand('.uno:Save');", "this._map.save(false, false);")
+            if "this._map.sendUnoCommand('.uno:Save')" in socket_js:
+                raise RuntimeError("Save bridge still sends the forbidden .uno:Save command")
 
         with ZipFile(temp, "w", ZIP_DEFLATED, compresslevel=1, allowZip64=True) as target:
             for item in source.infolist():
@@ -99,9 +102,10 @@ def main() -> None:
                 b"mountUniRuntimeAssets",
                 b"onUniEditorSaveResult",
                 b"extractUniRuntimeUnpack",
-                b"UNI_RUNTIME_ASSETS_EXTRACTED_V2",
+                b"UNI_RUNTIME_ASSETS_EXTRACTED_V5",
                 b"Using runtime ZIP for native asset archive",
-                b"file:///android_asset/dist/cool.html?file_path=",
+                b"getRuntimeAssetUrl",
+                b"loadDataWithBaseURL",
             )
             if any(marker not in activity for marker in required_engine_markers):
                 raise RuntimeError("Compiled classes.jar is missing required runtime asset fixes")
