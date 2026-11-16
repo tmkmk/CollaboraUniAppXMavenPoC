@@ -38,14 +38,17 @@ SAVE_FOR_EXIT = """        window.__uniCollaboraSaveForExit = () => {
             this._map.save(false, false);
         };
 """
-CLOSEAPP_MARKER = """                window.postMobileMessage('BYE');
-            }
-            else {
+CLOSEAPP_MARKER = """                if (window.codaRemotePage)
+                    postUICloseToIntegrator();
+                window.postMobileMessage('BYE');
 """
-CLOSEAPP_PATCH = """                window.postMobileMessage('BYE');
-                return;
-            }
-            else {
+CLOSEAPP_PATCH = """                if (window.codaRemotePage)
+                    postUICloseToIntegrator();
+                if (window.COOLMessageHandler && window.COOLMessageHandler.closeUniDocument) {
+                    window.COOLMessageHandler.closeUniDocument();
+                    return;
+                }
+                window.postMobileMessage('BYE');
 """
 MOBILE_BACK_MARKER = """    enterReadonlyOrClose() {
         if (this.map.isEditMode()) {
