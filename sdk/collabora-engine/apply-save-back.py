@@ -281,18 +281,43 @@ def main() -> None:
         '                + " changingConfigurations=" + isChangingConfigurations());\n',
     )
 
-    if "private boolean copyTempBackToIntent()" not in activity.read_text(encoding="utf-8"):
-        replace_between(
-            activity,
-            "    private void copyTempBackToIntent() {\n",
-            "    /** Copy the temp file back to the document. */\n",
-            '''    private boolean copyTempBackToIntent() {
-        if (!isDocEditable || mTempFile == null || !mTempFile.isFile() || getIntent().getData() == null)
+    save_back_source = activity.read_text(encoding="utf-8")
+    old_file_uri_guard = '''        if (!isDocEditable || mTempFile == null || !mTempFile.isFile() || getIntent().getData() == null)
             return false;
 
         Uri uri = getIntent().getData();
         if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme()))
             return true; // file:// documents are saved in place by the Engine.
+'''
+    new_file_uri_guard = '''        if (!isDocEditable || getIntent().getData() == null)
+            return false;
+
+        Uri uri = getIntent().getData();
+        if (ContentResolver.SCHEME_FILE.equals(uri.getScheme()))
+            return true; // The Engine writes file:// documents directly in place.
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme()))
+            return false;
+        if (mTempFile == null || !mTempFile.isFile())
+            return false;
+'''
+    if old_file_uri_guard in save_back_source:
+        replace_once(activity, old_file_uri_guard, new_file_uri_guard)
+    elif "private boolean copyTempBackToIntent()" not in save_back_source:
+        replace_between(
+            activity,
+            "    private void copyTempBackToIntent() {\n",
+            "    /** Copy the temp file back to the document. */\n",
+            '''    private boolean copyTempBackToIntent() {
+        if (!isDocEditable || getIntent().getData() == null)
+            return false;
+
+        Uri uri = getIntent().getData();
+        if (ContentResolver.SCHEME_FILE.equals(uri.getScheme()))
+            return true; // The Engine writes file:// documents directly in place.
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme()))
+            return false;
+        if (mTempFile == null || !mTempFile.isFile())
+            return false;
         if (mResolvedFile != null)
             return copyTempBackToFile();
 
