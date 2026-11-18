@@ -14,3 +14,4 @@ sdk/collabora-api/bin/
 sdk/collabora-demo/bin/
 sdk/collabora-engine/*.orig
 sdk/collabora-engine/__pycache__/
+build/

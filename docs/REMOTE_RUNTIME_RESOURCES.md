@@ -2,11 +2,11 @@
 
 ## 当前交付物
 
-- 运行时 ZIP：`collabora-engine-runtime-0.1.4-arm64-v8a-save-return4.zip`
-- SHA-256：`f07139fcdd98c0d0ca2d0eff7851ab7481043eb31c697ce9c03df1c4160d4434`
+- 运行时 ZIP：`collabora-engine-runtime-0.1.4-arm64-v8a-save-return5.zip`
+- SHA-256：`2a3ddbf1f3bc22f98191eaa27fd3630c7a7998597e7477dba04a16a1526e1d2e`
 - ABI：`arm64-v8a`
 - 组成：Writer Web assets、13 个 Engine/NSS `.so`、`runtime-manifest.json`
-- Maven AAR：`io.github.tmkmk.collabora:collabora-engine:0.1.11`
+- Maven AAR：`io.github.tmkmk.collabora:collabora-engine:0.1.14`
 
 ## 服务器部署
 
@@ -15,7 +15,7 @@
 下载地址：
 
 ```text
-https://gjy.gzjtjt.cn/appsource/collabora-engine-runtime-0.1.4-arm64-v8a-save-return4.zip
+https://gjy.gzjtjt.cn/appsource/collabora-engine-runtime-0.1.4-arm64-v8a-save-return5.zip
 ```
 
 SHA-256 校验文件与 ZIP 一同部署。服务器文件应可通过 HTTPS 直接访问并返回 HTTP 200。
@@ -25,10 +25,11 @@ SHA-256 校验文件与 ZIP 一同部署。服务器文件应可通过 HTTPS 直
 从仓库根目录运行：
 
 ```powershell
-python sdk/collabora-engine/package-runtime-resources.py --version 0.1.4 --abi arm64-v8a --archive-name collabora-engine-runtime-0.1.4-arm64-v8a-save-return4.zip --esbuild-module build/runtime-tooling/node_modules/esbuild
+npm install --prefix build/runtime-tooling --no-save --package-lock=false esbuild@0.25.12
+python sdk/collabora-engine/package-runtime-resources.py --version 0.1.4 --abi arm64-v8a --archive-name collabora-engine-runtime-0.1.4-arm64-v8a-save-return5.zip --esbuild-module build/runtime-tooling/node_modules/esbuild
 ```
 
-生成物位于 `build/runtime-resources/0.1.4/`。生成过程需要 Python、Node.js 和 `esbuild`（版本见 `build/runtime-tooling/package.json`）。运行时 ZIP 通过服务器或制品存储分发，不提交到 Git。
+生成物位于 `build/runtime-resources/0.1.4/`。生成过程需要 Python、Node.js、npm 和 esbuild 0.25.12。`build/` 是本地生成目录，已整体加入 Git 忽略规则；运行时 ZIP 通过服务器或制品存储分发，不提交到 Git。
 
 ## 返回与保存处理
 
